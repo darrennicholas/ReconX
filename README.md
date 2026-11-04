@@ -37,6 +37,17 @@ frontend/src/api.ts               Session, CSRF, request ID, idempotency
 | Pengaturan | Kelola | — | Lihat | Lihat |
 
 Admin mengelola akses dan konfigurasi. Operator menjalankan rekonsiliasi. Checker memeriksa keputusan dan menutup batch. Auditor meninjau hasil dan riwayat. Persetujuan memerlukan Checker yang berbeda dari pembuat pengajuan.
+
+### Akun awal development
+
+| Role | Email | Password awal | Keterangan |
+| --- | --- | --- | --- |
+| Admin | `admin@reconx.local` | `developer` | Dibuat oleh seeder lokal pada database kosong. |
+| Operator | — | — | Dibuat oleh Admin melalui menu Users & Access. |
+| Checker | — | — | Dibuat oleh Admin melalui menu Users & Access. |
+| Auditor | — | — | Dibuat oleh Admin melalui menu Users & Access. |
+
+Seeder membuat satu akun Admin; role lainnya tersedia untuk ditetapkan saat Admin membuat pengguna. Password `developer` hanya digunakan untuk akun seed di lingkungan development.
 ## Alur bisnis (FSD §4)
 
 1. Operator membuat batch untuk rekening dan periode tertentu. Backend menolak periode yang bertumpang-tindih pada rekening yang sama.
