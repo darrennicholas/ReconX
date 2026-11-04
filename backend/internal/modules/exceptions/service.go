@@ -551,7 +551,7 @@ func (s Service) DecideApproval(ctx context.Context, approvalID, decision, comme
 	if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET state=$2,checker_id=$3,decision_comment=$4,decided_at=now() WHERE id=$1`, approvalID, newState, checkerID, comment); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO notifications(user_id,type,title,body,target_entity,target_entity_id) VALUES ($1,$2,$3,$4,'approval',$5)`, item.MakerID, "APPROVAL_"+newState, "Keputusan approval tersedia", comment, approvalID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO notifications(user_id,type,title,body,target_entity,target_entity_id) VALUES ($1,$2,$3,$4,'batch',$5)`, item.MakerID, "APPROVAL_"+newState, "Keputusan approval tersedia", comment, item.BatchID); err != nil {
 		return err
 	}
 	if err := audit.Append(ctx, tx, checkerID, "APPROVAL_"+newState, "approval", approvalID, map[string]string{"state": "PENDING"}, map[string]any{"state": newState, "comment": comment}, requestID, ip); err != nil {

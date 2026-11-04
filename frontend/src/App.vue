@@ -27,6 +27,7 @@ const interactionLoading = ref(false)
 const showGlobalLoading = ref(false)
 let interactionTimer: number | undefined
 let loadingHideTimer: number | undefined
+let notificationTimer: number | undefined
 let loadingStartedAt = 0
 const loadingRequested = computed(() => busy.value || isActionLoading.value || interactionLoading.value)
 
@@ -54,6 +55,8 @@ function startInteractionLoading(event: MouseEvent) {
 onUnmounted(() => {
   window.clearTimeout(interactionTimer)
   window.clearTimeout(loadingHideTimer)
+  window.clearInterval(notificationTimer)
+  window.removeEventListener('reconx:notifications-changed', refreshNotifications)
 })
 const selectedBatchID = ref('')
 const selectedExceptionID = ref('')
@@ -279,6 +282,8 @@ const pageAction = computed(() => {
 })
 
 onMounted(async () => {
+  window.addEventListener('reconx:notifications-changed', refreshNotifications)
+  notificationTimer = window.setInterval(refreshNotifications, 15000)
   try {
     const response = await fetch('/api/v1/health')
     apiStatus.value = response.ok ? 'online' : 'offline'
@@ -457,7 +462,16 @@ async function login() {
 
 async function logout() {
   try { await apiRequest('/api/v1/auth/logout', { method: 'POST' }) } catch { /* Session may already be expired. */ }
-  currentUser.value = null; selectedBatchID.value = ''; selectedExceptionID.value = ''; exceptionDetail.value = null; modal.value = ''
+  currentUser.value = null; notifications.value = []; selectedBatchID.value = ''; selectedExceptionID.value = ''; exceptionDetail.value = null; modal.value = ''
+}
+
+async function refreshNotifications() {
+  const userID = currentUser.value?.id
+  if (!userID) return
+  try {
+    const { data } = await apiRequest<Record<string, any>[]>('/api/v1/notifications?page_size=10')
+    if (currentUser.value?.id === userID) notifications.value = data
+  } catch { /* A later refresh will retry if the server is unavailable. */ }
 }
 
 function navigate(id: string) {
@@ -751,6 +765,12 @@ async function openNotification(item: Record<string, any>) {
   }
   showNotifications.value = false
   if (item.target_entity === 'batch') {
+    try {
+      const { data } = await apiRequest<Record<string, any>>(`/api/v1/batches/${item.target_entity_id}`)
+      const index = rawBatches.value.findIndex(batch => batch.id === data.id)
+      if (index >= 0) rawBatches.value.splice(index, 1, data)
+      else rawBatches.value.unshift(data)
+    } catch (error) { showToast(error instanceof Error ? error.message : 'Batch tidak dapat dibuka.'); return }
     selectedBatchID.value = item.target_entity_id
     navigate('batchDetail')
     await Promise.all([loadMatches(), loadBatchDetails()])
@@ -759,9 +779,21 @@ async function openNotification(item: Record<string, any>) {
     navigate('exceptionDetail')
     await loadExceptionDetail()
   } else if (item.target_entity === 'approval') {
-    selectedApprovalID.value = item.target_entity_id
-    decisionComment.value = ''
-    modal.value = 'approval'
+    if (['CHECKER', 'AUDITOR'].includes(currentUser.value?.role ?? '')) {
+      try { rawApprovals.value = (await apiRequest<Record<string, any>[]>('/api/v1/approvals')).data }
+      catch (error) { showToast(error instanceof Error ? error.message : 'Approval tidak dapat dibuka.'); return }
+      selectedApprovalID.value = item.target_entity_id
+      decisionComment.value = ''
+      modal.value = 'approval'
+    } else {
+      navigate('batches')
+    }
+  } else if (item.target_entity === 'bank_account') {
+    navigate('accounts')
+  } else if (item.target_entity === 'user' && currentUser.value?.role === 'ADMIN') {
+    navigate('users')
+  } else if (item.target_entity === 'settings' && ['ADMIN', 'CHECKER', 'AUDITOR'].includes(currentUser.value?.role ?? '')) {
+    navigate('settings')
   }
 }
 

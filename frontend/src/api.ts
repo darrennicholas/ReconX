@@ -43,7 +43,12 @@ export async function apiRequest<T>(path: string, options: RequestInit & { idemp
     }
     return { data: envelope.data as T, response }
   } finally {
-    if (mutating) pendingActions.value--
+    if (mutating) {
+      pendingActions.value--
+      if (!path.startsWith('/api/v1/notifications/') && path !== '/api/v1/auth/login' && path !== '/api/v1/auth/logout') {
+        window.dispatchEvent(new Event('reconx:notifications-changed'))
+      }
+    }
   }
 }
 
