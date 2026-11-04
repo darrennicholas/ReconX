@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"reconx/backend/internal/modules/identity"
 )
 
 type response struct {
@@ -25,6 +27,16 @@ func New(db *sql.DB, logger *slog.Logger) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, response{Status: "ready"})
+	})
+	mux.HandleFunc("GET /api/v1/meta/rbac", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"roles":           identity.RoleDefinitions(),
+			"permission_keys": identity.PermissionKeys(),
+			"segregation_of_duties": map[string]any{
+				"checker_approves_maker": false,
+				"admin_approval_bypass":  false,
+			},
+		})
 	})
 	mux.HandleFunc("GET /api/v1/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})

@@ -16,9 +16,9 @@ const emit = defineEmits<{ open: [] }>()
 
 function badgeFor(value: string) {
   const status = value.toLowerCase()
-  if (status.includes('completed') || status.includes('matched') || status.includes('aktif') || status.includes('success') || status.includes('disetujui')) return 'badge success'
+  if (status.includes('completed') || (status.includes('matched') && !status.includes('unmatched')) || status.includes('aktif') || status.includes('success') || status.includes('disetujui')) return 'badge success'
   if (status.includes('progress') || status.includes('review') || status.includes('menunggu') || status.includes('open')) return 'badge warning'
-  if (status.includes('unmatched') || status.includes('ditolak') || status.includes('failed')) return 'badge danger'
+  if (status.includes('unmatched') || status.includes('only') || status.includes('mismatch') || status.includes('ditolak') || status.includes('failed')) return 'badge danger'
   return 'badge neutral'
 }
 </script>
