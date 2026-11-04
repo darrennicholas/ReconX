@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import DataTable from './components/DataTable.vue'
 import { ApiError, apiRequest, downloadFile, isActionLoading } from './api'
 
@@ -23,6 +23,38 @@ const loginPassword = ref('')
 const showLoginPassword = ref(false)
 const loginError = ref('')
 const busy = ref(false)
+const interactionLoading = ref(false)
+const showGlobalLoading = ref(false)
+let interactionTimer: number | undefined
+let loadingHideTimer: number | undefined
+let loadingStartedAt = 0
+const loadingRequested = computed(() => busy.value || isActionLoading.value || interactionLoading.value)
+
+watch(loadingRequested, active => {
+  window.clearTimeout(loadingHideTimer)
+  if (active) {
+    if (!showGlobalLoading.value) loadingStartedAt = Date.now()
+    showGlobalLoading.value = true
+    return
+  }
+  const remaining = Math.max(0, 1000 - (Date.now() - loadingStartedAt))
+  loadingHideTimer = window.setTimeout(() => { showGlobalLoading.value = false }, remaining)
+}, { flush: 'sync' })
+
+function startInteractionLoading(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const button = target.closest('button')
+  if (!button || button.disabled) return
+  window.clearTimeout(interactionTimer)
+  interactionLoading.value = true
+  interactionTimer = window.setTimeout(() => { interactionLoading.value = false }, 1000)
+}
+
+onUnmounted(() => {
+  window.clearTimeout(interactionTimer)
+  window.clearTimeout(loadingHideTimer)
+})
 const selectedBatchID = ref('')
 const selectedExceptionID = ref('')
 const selectedApprovalID = ref('')
@@ -743,7 +775,7 @@ function badgeClass(value: string) {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" @click.capture="startInteractionLoading">
     <template v-if="!currentUser">
       <main class="login-shell">
         <section class="login-card">
@@ -882,7 +914,7 @@ function badgeClass(value: string) {
       <template v-else-if="modal === 'userActions'"><label class="field-label">Nama<input v-model="userEditForm.full_name" class="form-control" /></label><label class="field-label">Email<input v-model="userEditForm.email" class="form-control" type="email" /></label><label class="field-label">Role<select v-model="userEditForm.role" class="form-control"><option value="OPERATOR">Operator</option><option value="CHECKER">Checker</option><option value="ADMIN">Admin</option><option value="AUDITOR">Auditor</option></select></label><div class="modal-actions"><button class="button secondary" :disabled="busy" @click="toggleUserActive">{{ selectedUser?.active ? 'Nonaktifkan Akun' : 'Aktifkan Akun' }}</button><button class="button secondary" :disabled="busy" @click="saveUserChanges">Simpan Role</button></div><label class="field-label">Password baru<input v-model="resetPasswordValue" class="form-control" type="password" minlength="12" placeholder="Minimum 12 karakter" /></label><div class="modal-actions"><button class="button primary" :disabled="busy" @click="resetUserPassword">Reset Password</button></div></template>
       <div v-if="modal !== 'approval' && modal !== 'userActions' && modal !== 'profile' && modal !== 'transaction'" class="modal-actions"><button class="button secondary" @click="modal = ''">Batal</button><button class="button primary" :disabled="busy" @click="submitModal">{{ busy ? 'Menyimpan…' : modal === 'proposal' ? 'Kirim untuk Approval' : modal === 'editBatch' ? 'Simpan Perubahan' : 'Simpan' }}</button></div>
     </section></div></Transition>
-    <Transition name="loading"><div v-if="isActionLoading || busy" class="loading-overlay" role="status" aria-live="polite" aria-label="Sedang memproses"><div class="loading-card"><span class="loading-spinner" aria-hidden="true"></span><span><b>Sedang memproses</b><small>Mohon tunggu sebentar</small></span></div></div></Transition>
+    <Transition name="loading"><div v-if="showGlobalLoading" class="loading-overlay" role="status" aria-live="polite" aria-label="Sedang memproses"><div class="loading-card"><span class="loading-spinner" aria-hidden="true"></span><span><b>Sedang memproses</b><small>Mohon tunggu sebentar</small></span></div></div></Transition>
     <div v-if="toast" class="toast-message"><span>✓</span>{{ toast }}</div>
   </div>
 </template>
