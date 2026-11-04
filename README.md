@@ -43,11 +43,11 @@ Admin mengelola akses dan konfigurasi. Operator menjalankan rekonsiliasi. Checke
 | Role | Email | Password awal | Keterangan |
 | --- | --- | --- | --- |
 | Admin | `admin@reconx.local` | `developer` | Dibuat oleh seeder lokal pada database kosong. |
-| Operator | — | — | Dibuat oleh Admin melalui menu Users & Access. |
-| Checker | — | — | Dibuat oleh Admin melalui menu Users & Access. |
-| Auditor | — | — | Dibuat oleh Admin melalui menu Users & Access. |
+| Operator | `operator@reconx.local` | `developer` | Menjalankan import dan rekonsiliasi. |
+| Checker | `checker@reconx.local` | `developer` | Memeriksa dan menyetujui pengajuan. |
+| Auditor | `auditor@reconx.local` | `developer` | Meninjau laporan dan audit. |
 
-Seeder membuat satu akun Admin; role lainnya tersedia untuk ditetapkan saat Admin membuat pengguna. Password `developer` hanya digunakan untuk akun seed di lingkungan development.
+Seeder development membuat keempat akun ini serta rekening dan batch contoh dengan transaksi, matching, exception, dan pengajuan. Seeder aman dijalankan kembali dan tidak mengubah password akun yang sudah ada. Password `developer` hanya untuk pengembangan lokal.
 ## Alur bisnis (FSD §4)
 
 1. Operator membuat batch untuk rekening dan periode tertentu. Backend menolak periode yang bertumpang-tindih pada rekening yang sama.
@@ -72,7 +72,7 @@ State utama batch: `DRAFT → READY → PROCESSING → REVIEW → PENDING_APPROV
 
 ## Database
 
-Migration ada di source code, tetapi **API tidak menjalankannya saat startup**. Database lokal tidak berubah sampai Anda menjalankan `cmd/migrate`. Migration membuat schema MVP dan data referensi role/permission/settings; ia tidak memasukkan batch, transaksi, atau rekening contoh. `cmd/seed` membuat satu Admin awal bila tabel user masih kosong.
+Migration ada di source code, tetapi **API tidak menjalankannya saat startup**. Database lokal tidak berubah sampai Anda menjalankan `cmd/migrate`. Migration membuat schema MVP dan data referensi role/permission/settings; sedangkan `cmd/seed` membuat Admin awal dan, dalam development, akun role serta data contoh yang saling terhubung.
 
 Gunakan database PostgreSQL kosong yang memang disiapkan untuk ReconX. Perintah migration akan membuat tabel di database pada `DATABASE_URL`.
 

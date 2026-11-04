@@ -169,7 +169,7 @@ func (s Service) RunMatching(ctx context.Context, batchID string, expectedVersio
 		return failFinish(err)
 	}
 	if _, err := finishTx.ExecContext(ctx, `INSERT INTO notifications(user_id,type,title,body,target_entity,target_entity_id)
-		SELECT created_by,'MATCHING_COMPLETE','Rekonsiliasi selesai',$1,'batch',$2 FROM reconciliation_batches WHERE id=$2`, fmt.Sprintf("%s selesai: %d pasangan cocok dan %d exception.", run.RuleVersion, len(matched), len(exceptions)), batchID); err != nil {
+		SELECT created_by,'MATCHING_COMPLETE','Rekonsiliasi selesai',$1,'batch',$2::uuid::text FROM reconciliation_batches WHERE id=$2::uuid`, fmt.Sprintf("%s selesai: %d pasangan cocok dan %d exception.", run.RuleVersion, len(matched), len(exceptions)), batchID); err != nil {
 		return failFinish(err)
 	}
 	if err := audit.Append(ctx, finishTx, actorID, "MATCH_RUN_COMPLETED", "run", run.ID, nil, map[string]any{"matched_pairs": len(matched), "exceptions": len(exceptions), "source_version": sourceVersion}, requestID, ip); err != nil {

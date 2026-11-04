@@ -213,3 +213,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @media (max-width: 420px) {
   .report-kpis { grid-template-columns: 1fr; }
 }
+
+/* Forms and dialog transitions */
+.modal-backdrop { padding: 24px; background: rgba(10, 31, 48, .55); }
+.modal-card { width: min(100%, 560px); padding: 28px; border: 0; border-radius: 20px; box-shadow: 0 28px 90px rgba(9, 32, 50, .25); }
+.modal-heading { padding-bottom: 20px; margin-bottom: 20px; }
+.modal-heading h2 { font-size: 21px; letter-spacing: -.4px; }
+.modal-heading p { max-width: 420px; margin-top: 7px; font-size: 13px; line-height: 1.5; }
+.modal-card .field-label { margin: 16px 0; color: #445b6e; font-size: 13px; }
+.modal-card .form-control { min-height: 44px; margin-top: 8px; padding-inline: 13px; border-color: #dce5eb; border-radius: 10px; font-size: 14px; }
+.modal-card .form-control:focus { border-color: #18a798; box-shadow: 0 0 0 4px rgba(13, 148, 136, .10); outline: 0; }
+.modal-actions { gap: 10px; margin-top: 24px; padding-top: 18px; }
+.modal-actions .button { min-height: 42px; padding-inline: 18px; }
+.close-button { width: 34px; height: 34px; flex: 0 0 34px; }
+.modal-enter-active, .modal-leave-active { transition: opacity .2s ease; }
+.modal-enter-active .modal-card, .modal-leave-active .modal-card { transition: opacity .2s ease, transform .2s ease; }
+.modal-enter-from, .modal-leave-to { opacity: 0; }
+.modal-enter-from .modal-card, .modal-leave-to .modal-card { opacity: 0; transform: translateY(12px) scale(.98); }
+@media (prefers-reduced-motion: reduce) { .modal-enter-active, .modal-leave-active, .modal-enter-active .modal-card, .modal-leave-active .modal-card { transition: none; } }

@@ -70,5 +70,11 @@ func main() {
 		slog.Error("seed bootstrap admin", "error", err)
 		os.Exit(1)
 	}
+	if cfg.Environment == "development" {
+		if err := seedDevelopment(ctx, db, os.Getenv("BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("IMPORT_STORAGE_DIR")); err != nil {
+			slog.Error("seed development data", "error", err)
+			os.Exit(1)
+		}
+	}
 	slog.Info("bootstrap admin created if user table was empty")
 }

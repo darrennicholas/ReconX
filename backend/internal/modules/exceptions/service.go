@@ -402,7 +402,7 @@ func (s Service) ProposeManualMatch(ctx context.Context, exceptionID, reason, ma
 	if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_exceptions SET state='PENDING_ACTION_APPROVAL' WHERE id=$1`, exceptionID); err != nil {
 		return ApprovalView{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO notifications(user_id,type,title,body,target_entity,target_entity_id) SELECT id,'APPROVAL_REQUESTED','Manual match menunggu Checker',$1,'approval',$2 FROM users u JOIN roles r ON r.id=u.role_id WHERE u.active AND r.code='CHECKER'`, fmt.Sprintf("Usulan match %s memerlukan persetujuan.", internal.ReferenceID), approvalID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO notifications(user_id,type,title,body,target_entity,target_entity_id) SELECT u.id,'APPROVAL_REQUESTED','Manual match menunggu Checker',$1,'approval',$2 FROM users u JOIN roles r ON r.id=u.role_id WHERE u.active AND r.code='CHECKER'`, fmt.Sprintf("Usulan match %s memerlukan persetujuan.", internal.ReferenceID), approvalID); err != nil {
 		return ApprovalView{}, err
 	}
 	if err := audit.Append(ctx, tx, makerID, "MANUAL_MATCH_PROPOSED", "approval", approvalID, nil, map[string]any{"exception_id": exceptionID, "source_version": currentVersion}, requestID, ip); err != nil {

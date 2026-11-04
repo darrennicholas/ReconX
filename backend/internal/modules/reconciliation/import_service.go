@@ -243,14 +243,14 @@ func insertTransactions(ctx context.Context, tx *sql.Tx, batchID, importID, sour
 		if end > len(rows) {
 			end = len(rows)
 		}
-		values := make([]any, 0, (end-start)*10)
+		values := make([]any, 0, (end-start)*11)
 		placeholders := make([]string, 0, end-start)
 		for index, row := range rows[start:end] {
-			base := index * 10
-			placeholders = append(placeholders, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d::jsonb)", base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10))
-			values = append(values, batchID, importID, source, row.ReferenceRaw, row.ReferenceCanonical, row.Date, row.Direction, row.Amount, sourceVersion, row.RawRow)
+			base := index * 11
+			placeholders = append(placeholders, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d::jsonb)", base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11))
+			values = append(values, batchID, importID, source, row.ReferenceRaw, row.ReferenceCanonical, row.Date, row.Direction, row.Amount, row.Currency, sourceVersion, row.RawRow)
 		}
-		query := `INSERT INTO transactions(batch_id,import_file_id,source_type,reference_raw,reference_canonical,transaction_date,direction,amount_rupiah,source_version,raw_row) VALUES ` + strings.Join(placeholders, ",")
+		query := `INSERT INTO transactions(batch_id,import_file_id,source_type,reference_raw,reference_canonical,transaction_date,direction,amount_rupiah,currency,source_version,raw_row) VALUES ` + strings.Join(placeholders, ",")
 		if _, err := tx.ExecContext(ctx, query, values...); err != nil {
 			return err
 		}
