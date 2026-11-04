@@ -14,15 +14,13 @@ ReconX is a starter for a **Bank Transaction Reconciliation & Exception Manageme
 flowchart LR
   Browser[Vue 3 app :5173] -->|/api proxy| API[Go API :8080]
   API --> DB[(PostgreSQL :5432)]
-  API -->|startup: apply pending SQL migrations| Schema[public schema]
 ```
 
 1. The API loads configuration from the project `.env` file (or process environment variables).
 2. It opens a PostgreSQL connection and checks that the database is reachable.
-3. It applies unapplied, versioned SQL migrations from `backend/migrations` and records them in `schema_migrations`.
-4. It starts the HTTP server and logs requests. `Ctrl+C` triggers graceful shutdown.
-5. Vite serves the Vue app and proxies `/api/*` requests to the Go API.
-6. The current dashboard calls `GET /api/v1/health` and displays the API connection state.
+3. It starts the HTTP server and logs requests. `Ctrl+C` triggers graceful shutdown.
+4. Vite serves the Vue app and proxies `/api/*` requests to the Go API.
+5. The current dashboard calls `GET /api/v1/health` and displays the API connection state.
 
 ## Repository layout
 
@@ -30,10 +28,9 @@ flowchart LR
 backend/
   cmd/api/                         API entry point
   internal/platform/config/        Environment configuration
-  internal/platform/database/      PostgreSQL connection and migration runner
+  internal/platform/database/      PostgreSQL connection
   internal/platform/httpserver/    HTTP routes and request logging
   internal/modules/                identity, banking, reconciliation, exceptions
-  migrations/                      Embedded, versioned SQL migrations
 frontend/
   src/App.vue                      Initial dashboard
   src/style.css                    Dashboard styles
@@ -113,19 +110,9 @@ Vite proxies browser requests from `/api` to `API_PROXY_TARGET` (default `http:/
 
 ## Database schema
 
-Pending migrations run automatically when the API starts. The initial schema is created in PostgreSQL's `public` schema:
+The application schema is intentionally undefined at this stage. There are no project migrations or application tables in the code, and API startup does not create or modify tables. The API only checks that the configured PostgreSQL database is reachable. We can design the schema and add migrations after the reconciliation requirements are clear.
 
-- `users`
-- `bank_accounts`
-- `bank_transactions`
-- `reconciliation_runs`
-- `reconciliation_matches`
-- `reconciliation_exceptions`
-- `schema_migrations`
-
-These tables are initially empty. The current scaffold does **not** include bank-statement import, reconciliation endpoints, authentication, or exception-management workflows, so it does not insert transaction or user records yet. Those capabilities are the next implementation steps.
-
-In HeidiSQL, connect to the same PostgreSQL host, port, and database from `DATABASE_URL`, then refresh `reconx` and expand `public` → `Tables`. `pg_catalog`, `information_schema`, and `pg_toast` are PostgreSQL-managed schemas.
+The Docker Compose service creates an empty database named `reconx`; an existing PostgreSQL database can be used through `DATABASE_URL`. Removing migration files from the repository does not delete tables already present in a local PostgreSQL instance. In HeidiSQL, connect to the configured database and inspect its `public` schema. `pg_catalog`, `information_schema`, and `pg_toast` are PostgreSQL-managed schemas.
 
 ## Configuration
 

@@ -31,10 +31,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
-	if err := database.RunMigrations(ctx, db); err != nil {
-		logger.Error("run database migrations", "error", err)
-		os.Exit(1)
-	}
 
 	server := &http.Server{
 		Addr:              cfg.APIAddr,
