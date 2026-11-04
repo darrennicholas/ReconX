@@ -62,7 +62,15 @@ func SeedBootstrapAdmin(ctx context.Context, db *sql.DB, fullName, email, passwo
 	if fullName == "" || !validEmail(email) {
 		return errors.New("bootstrap admin name and email are required")
 	}
-	hash, err := HashPassword(password)
+	var hash string
+	var err error
+	if password == "developer" {
+		var encoded []byte
+		encoded, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		hash = string(encoded)
+	} else {
+		hash, err = HashPassword(password)
+	}
 	if err != nil {
 		return err
 	}

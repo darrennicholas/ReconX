@@ -89,16 +89,16 @@ cd C:\ReconX\backend
 go run ./cmd/migrate
 ```
 
-3. Tetapkan nilai Admin awal untuk sesi PowerShell ini, lalu buat user Admin. Password minimal 12 karakter:
+3. Tetapkan nilai Admin awal untuk sesi PowerShell ini, lalu buat user Admin. Untuk pengembangan lokal gunakan akun seed berikut:
 
 ```powershell
 $env:BOOTSTRAP_ADMIN_NAME = 'ReconX Admin'
-$env:BOOTSTRAP_ADMIN_EMAIL = 'admin@localhost'
-$env:BOOTSTRAP_ADMIN_PASSWORD = 'GantiDenganPasswordKuat12!'
+$env:BOOTSTRAP_ADMIN_EMAIL = 'admin@reconx.local'
+$env:BOOTSTRAP_ADMIN_PASSWORD = 'developer'
 go run ./cmd/seed
 ```
 
-Seed aman untuk diulang: jika sudah ada user, Admin kedua tidak dibuat. Simpan password milik sendiri dan jangan commit `.env` atau kredensial.
+Password `developer` hanya untuk seed dalam lingkungan development; password pengguna lain tetap minimal 12 karakter. Seed aman untuk diulang: jika sudah ada user, Admin kedua tidak dibuat. Simpan password milik sendiri dan jangan commit `.env` atau kredensial.
 
 4. Jalankan API dan frontend di dua terminal:
 
