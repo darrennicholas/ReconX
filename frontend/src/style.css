@@ -166,7 +166,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .dashboard-filter-controls input, .dashboard-filter-controls select { width: auto; min-width: 130px; max-width: 100%; }
 .topbar { min-width: 0; gap: 16px; }
 .topbar-actions { min-width: 0; }
-.tabs { max-width: 100%; overflow-x: auto; }
+.tabs { max-width: 100%; overflow: visible; flex-wrap: wrap; row-gap: 0; }
 .modal-card { max-height: calc(100vh - 40px); overflow-y: auto; }
 @media (max-width: 1250px) {
   .page-header { flex-direction: column; align-items: stretch; }
@@ -182,4 +182,34 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 @media (max-width: 420px) {
   .kpi-grid { grid-template-columns: 1fr; }
+}
+
+/* Shared workspace layout */
+.app-shell { overflow-x: clip; }
+.content-area { max-width: 1600px; margin-inline: auto; }
+.report-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.report-filters, .table-toolbar, .detail-title { flex-wrap: wrap; }
+.report-filters .filter-block { min-width: 0; flex: 1 1 160px; }
+.filters { min-width: 0; flex-wrap: wrap; }
+.table-toolbar { padding-block: 6px; }
+.table-toolbar .tabs { flex: 1 1 300px; }
+.table-toolbar .filters { flex: 1 1 340px; }
+.tabs button { min-height: 40px; }
+.matching-kpis, .exception-kpis { grid-template-columns: repeat(auto-fit, minmax(min(100%, 155px), 1fr)); }
+.profile-button, .profile-name { min-width: 0; }
+.profile-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-insights > *, .page-grid > *, .report-kpis > * { min-width: 0; }
+.table-scroll, .role-table-scroll { max-width: 100%; }
+@media (max-width: 1250px) {
+  .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-insights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-chart-panel { grid-column: 1 / -1; }
+}
+@media (max-width: 720px) {
+  .dashboard-insights { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-chart-panel { grid-column: auto; }
+  .report-filters .filter-block { width: 100%; flex-basis: 100%; }
+}
+@media (max-width: 420px) {
+  .report-kpis { grid-template-columns: 1fr; }
 }

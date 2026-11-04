@@ -44,7 +44,7 @@ function badgeFor(value: string) {
       <thead>
         <tr>
           <th v-for="column in columns" :key="column.key" @click="toggleSort(column.key)">
-            {{ column.label }} <span class="sort-mark">{{ sortKey === column.key ? descending ? '↓' : '↑' : '↕' }}</span>
+            {{ column.label }}
           </th>
           <th class="action-head">Aksi</th>
         </tr>
