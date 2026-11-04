@@ -121,7 +121,7 @@ func (s Service) List(ctx context.Context, filter ExceptionFilter) ([]reconcilia
 	}
 	query := `SELECT e.id::text,e.batch_id::text,b.batch_no,e.run_id::text,e.type,e.state,COALESCE(e.internal_transaction_id::text,''),COALESCE(e.bank_transaction_id::text,''),COALESCE(i.reference_raw,k.reference_raw,''),i.amount_rupiah,k.amount_rupiah,
 		CASE WHEN i.amount_rupiah IS NOT NULL AND k.amount_rupiah IS NOT NULL THEN abs(i.amount_rupiah-k.amount_rupiah) ELSE COALESCE(i.amount_rupiah,k.amount_rupiah) END,
-		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at` + base + ` ORDER BY e.created_at DESC LIMIT $11 OFFSET $12`
+		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),e.candidate_transaction_ids,COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at` + base + ` ORDER BY e.created_at DESC LIMIT $11 OFFSET $12`
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -131,8 +131,12 @@ func (s Service) List(ctx context.Context, filter ExceptionFilter) ([]reconcilia
 	items := make([]reconciliation.ExceptionView, 0)
 	for rows.Next() {
 		var item reconciliation.ExceptionView
+		var candidateIDs []byte
 		if err := rows.Scan(&item.ID, &item.BatchID, &item.BatchNo, &item.RunID, &item.Type, &item.State, &item.InternalTransactionID, &item.BankTransactionID, &item.ReferenceID,
-			&item.InternalAmount, &item.BankAmount, &item.Difference, &item.InternalDate, &item.BankDate, &item.InternalDirection, &item.BankDirection, &item.AssignedTo, &item.AssigneeName, &item.CreatedAt); err != nil {
+			&item.InternalAmount, &item.BankAmount, &item.Difference, &item.InternalDate, &item.BankDate, &item.InternalDirection, &item.BankDirection, &candidateIDs, &item.AssignedTo, &item.AssigneeName, &item.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		if err := json.Unmarshal(candidateIDs, &item.CandidateTransactionIDs); err != nil {
 			return nil, 0, err
 		}
 		items = append(items, item)
@@ -142,15 +146,19 @@ func (s Service) List(ctx context.Context, filter ExceptionFilter) ([]reconcilia
 
 func (s Service) Detail(ctx context.Context, exceptionID, operatorID string, operator bool) (ExceptionDetail, error) {
 	var detail ExceptionDetail
+	var candidateIDs []byte
 	err := s.DB.QueryRowContext(ctx, `SELECT e.id::text,e.batch_id::text,b.batch_no,e.run_id::text,e.type,e.state,COALESCE(e.internal_transaction_id::text,''),COALESCE(e.bank_transaction_id::text,''),COALESCE(i.reference_raw,k.reference_raw,''),i.amount_rupiah,k.amount_rupiah,
 		CASE WHEN i.amount_rupiah IS NOT NULL AND k.amount_rupiah IS NOT NULL THEN abs(i.amount_rupiah-k.amount_rupiah) ELSE COALESCE(i.amount_rupiah,k.amount_rupiah) END,
-		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at
+		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),e.candidate_transaction_ids,COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at
 		FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id LEFT JOIN users u ON u.id=e.assigned_to
 		LEFT JOIN transactions i ON i.id=e.internal_transaction_id LEFT JOIN transactions k ON k.id=e.bank_transaction_id
 		WHERE e.id=$1 AND ($2::boolean=false OR b.created_by::text=$3 OR e.assigned_to::text=$3)`, exceptionID, operator, operatorID).
 		Scan(&detail.ID, &detail.BatchID, &detail.BatchNo, &detail.RunID, &detail.Type, &detail.State, &detail.InternalTransactionID, &detail.BankTransactionID, &detail.ReferenceID,
-			&detail.InternalAmount, &detail.BankAmount, &detail.Difference, &detail.InternalDate, &detail.BankDate, &detail.InternalDirection, &detail.BankDirection, &detail.AssignedTo, &detail.AssigneeName, &detail.CreatedAt)
+			&detail.InternalAmount, &detail.BankAmount, &detail.Difference, &detail.InternalDate, &detail.BankDate, &detail.InternalDirection, &detail.BankDirection, &candidateIDs, &detail.AssignedTo, &detail.AssigneeName, &detail.CreatedAt)
 	if err != nil {
+		return ExceptionDetail{}, err
+	}
+	if err := json.Unmarshal(candidateIDs, &detail.CandidateTransactionIDs); err != nil {
 		return ExceptionDetail{}, err
 	}
 	if detail.InternalTransactionID != "" {
@@ -371,11 +379,7 @@ func (s Service) ProposeManualMatch(ctx context.Context, exceptionID, reason, ma
 	if err := scanTransaction(tx.QueryRowContext(ctx, `SELECT id::text,batch_id::text,import_file_id::text,source_type,reference_raw,reference_canonical,transaction_date,direction,amount_rupiah,currency,source_version,raw_row FROM transactions WHERE id=$1`, bankID), &bank); err != nil {
 		return ApprovalView{}, err
 	}
-	delta := internal.Date.Sub(bank.Date)
-	if delta < 0 {
-		delta = -delta
-	}
-	if internal.SourceType != "INTERNAL" || bank.SourceType != "BANK" || internal.ReferenceCanonical != bank.ReferenceCanonical || internal.Amount != bank.Amount || internal.Direction != bank.Direction || internal.Currency != bank.Currency || internal.SourceVersion != currentVersion || bank.SourceVersion != currentVersion || delta > 72*time.Hour {
+	if internal.SourceType != "INTERNAL" || bank.SourceType != "BANK" || internal.ReferenceCanonical != bank.ReferenceCanonical || internal.Amount != bank.Amount || internal.Direction != bank.Direction || internal.Currency != bank.Currency || internal.SourceVersion != currentVersion || bank.SourceVersion != currentVersion || !withinCalendarDays(internal.Date, bank.Date, 3) {
 		return ApprovalView{}, ErrNotEligible
 	}
 	var alreadyMatched bool
@@ -415,6 +419,16 @@ func (s Service) ProposeManualMatch(ctx context.Context, exceptionID, reason, ma
 		return ApprovalView{}, err
 	}
 	return s.GetApproval(ctx, approvalID)
+}
+
+func withinCalendarDays(left, right time.Time, maxDays int) bool {
+	leftDate := time.Date(left.Year(), left.Month(), left.Day(), 0, 0, 0, 0, time.UTC)
+	rightDate := time.Date(right.Year(), right.Month(), right.Day(), 0, 0, 0, 0, time.UTC)
+	delta := leftDate.Sub(rightDate)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= time.Duration(maxDays)*24*time.Hour
 }
 
 func scanTransaction(row *sql.Row, item *reconciliation.TransactionView) error {

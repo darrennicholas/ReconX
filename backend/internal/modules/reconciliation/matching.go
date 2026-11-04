@@ -58,28 +58,39 @@ type MatchView struct {
 }
 
 type ExceptionView struct {
-	ID                    string     `json:"id"`
-	BatchID               string     `json:"batch_id"`
-	BatchNo               string     `json:"batch_no"`
-	RunID                 string     `json:"run_id"`
-	Type                  string     `json:"type"`
-	State                 string     `json:"state"`
-	InternalTransactionID string     `json:"internal_transaction_id,omitempty"`
-	BankTransactionID     string     `json:"bank_transaction_id,omitempty"`
-	ReferenceID           string     `json:"reference_id"`
-	InternalAmount        *int64     `json:"internal_amount_rupiah,omitempty"`
-	BankAmount            *int64     `json:"bank_amount_rupiah,omitempty"`
-	Difference            *int64     `json:"difference_rupiah,omitempty"`
-	InternalDate          *time.Time `json:"internal_date,omitempty"`
-	BankDate              *time.Time `json:"bank_date,omitempty"`
-	InternalDirection     string     `json:"internal_direction,omitempty"`
-	BankDirection         string     `json:"bank_direction,omitempty"`
-	AssignedTo            string     `json:"assigned_to,omitempty"`
-	AssigneeName          string     `json:"assignee_name,omitempty"`
-	CreatedAt             time.Time  `json:"created_at"`
+	ID                      string     `json:"id"`
+	BatchID                 string     `json:"batch_id"`
+	BatchNo                 string     `json:"batch_no"`
+	RunID                   string     `json:"run_id"`
+	Type                    string     `json:"type"`
+	State                   string     `json:"state"`
+	InternalTransactionID   string     `json:"internal_transaction_id,omitempty"`
+	BankTransactionID       string     `json:"bank_transaction_id,omitempty"`
+	ReferenceID             string     `json:"reference_id"`
+	InternalAmount          *int64     `json:"internal_amount_rupiah,omitempty"`
+	BankAmount              *int64     `json:"bank_amount_rupiah,omitempty"`
+	Difference              *int64     `json:"difference_rupiah,omitempty"`
+	InternalDate            *time.Time `json:"internal_date,omitempty"`
+	BankDate                *time.Time `json:"bank_date,omitempty"`
+	InternalDirection       string     `json:"internal_direction,omitempty"`
+	BankDirection           string     `json:"bank_direction,omitempty"`
+	CandidateTransactionIDs []string   `json:"candidate_transaction_ids,omitempty"`
+	AssignedTo              string     `json:"assigned_to,omitempty"`
+	AssigneeName            string     `json:"assignee_name,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
 }
 
 func (s Service) RunMatching(ctx context.Context, batchID string, expectedVersion int64, actorID, requestID, ip string) (MatchRunResult, error) {
+	run, err := s.StartMatching(ctx, batchID, expectedVersion, actorID, requestID, ip)
+	if err != nil {
+		return MatchRunResult{}, err
+	}
+	return s.CompleteMatching(ctx, run, actorID, requestID, ip)
+}
+
+// StartMatching validates the active sources and persists the processing run so
+// callers can report progress while CompleteMatching works on the snapshot.
+func (s Service) StartMatching(ctx context.Context, batchID string, expectedVersion int64, actorID, requestID, ip string) (MatchRunResult, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return MatchRunResult{}, err
@@ -121,7 +132,12 @@ func (s Service) RunMatching(ctx context.Context, batchID string, expectedVersio
 	if err := tx.Commit(); err != nil {
 		return MatchRunResult{}, err
 	}
+	return run, nil
+}
 
+// CompleteMatching computes and stores results for the already-locked run.
+func (s Service) CompleteMatching(ctx context.Context, run MatchRunResult, actorID, requestID, ip string) (MatchRunResult, error) {
+	batchID, sourceVersion := run.BatchID, run.SourceVersion
 	internalRows, err := s.sourceTransactions(ctx, batchID, sourceVersion, "INTERNAL")
 	if err != nil {
 		return MatchRunResult{}, s.failRun(ctx, run, batchID, sourceVersion, actorID, requestID, ip, err)
@@ -156,8 +172,16 @@ func (s Service) RunMatching(ctx context.Context, batchID string, expectedVersio
 		}
 	}
 	for _, item := range exceptions {
-		if _, err := finishTx.ExecContext(ctx, `INSERT INTO reconciliation_exceptions(batch_id,run_id,type,internal_transaction_id,bank_transaction_id)
-			VALUES ($1,$2,$3,NULLIF($4,'')::uuid,NULLIF($5,'')::uuid)`, batchID, run.ID, item.kind, item.internal.ID, item.bank.ID); err != nil {
+		candidateIDs := item.candidateTransactionIDs
+		if candidateIDs == nil {
+			candidateIDs = []string{}
+		}
+		candidateJSON, err := json.Marshal(candidateIDs)
+		if err != nil {
+			return failFinish(err)
+		}
+		if _, err := finishTx.ExecContext(ctx, `INSERT INTO reconciliation_exceptions(batch_id,run_id,type,internal_transaction_id,bank_transaction_id,candidate_transaction_ids)
+			VALUES ($1,$2,$3,NULLIF($4,'')::uuid,NULLIF($5,'')::uuid,$6::jsonb)`, batchID, run.ID, item.kind, item.internal.ID, item.bank.ID, string(candidateJSON)); err != nil {
 			return failFinish(err)
 		}
 	}
@@ -188,21 +212,22 @@ type identifiedPair struct {
 }
 
 type identifiedException struct {
-	kind     string
-	internal TransactionView
-	bank     TransactionView
+	kind                    string
+	internal                TransactionView
+	bank                    TransactionView
+	candidateTransactionIDs []string
 }
 
 func classify(internalRows, bankRows []TransactionView) ([]identifiedPair, []identifiedException) {
-	internal := make(map[string]TransactionView, len(internalRows))
-	bank := make(map[string]TransactionView, len(bankRows))
+	internal := make(map[string][]TransactionView, len(internalRows))
+	bank := make(map[string][]TransactionView, len(bankRows))
 	keys := make(map[string]struct{}, len(internalRows)+len(bankRows))
 	for _, row := range internalRows {
-		internal[row.ReferenceCanonical] = row
+		internal[row.ReferenceCanonical] = append(internal[row.ReferenceCanonical], row)
 		keys[row.ReferenceCanonical] = struct{}{}
 	}
 	for _, row := range bankRows {
-		bank[row.ReferenceCanonical] = row
+		bank[row.ReferenceCanonical] = append(bank[row.ReferenceCanonical], row)
 		keys[row.ReferenceCanonical] = struct{}{}
 	}
 	ordered := make([]string, 0, len(keys))
@@ -213,14 +238,30 @@ func classify(internalRows, bankRows []TransactionView) ([]identifiedPair, []ide
 	matches := make([]identifiedPair, 0)
 	exceptions := make([]identifiedException, 0)
 	for _, key := range ordered {
-		internalRow, hasInternal := internal[key]
-		bankRow, hasBank := bank[key]
+		internalCandidates, hasInternal := internal[key]
+		bankCandidates, hasBank := bank[key]
+		internalRow, bankRow := firstTransaction(internalCandidates), firstTransaction(bankCandidates)
 		if !hasInternal {
-			exceptions = append(exceptions, identifiedException{kind: "BANK_ONLY", bank: bankRow})
+			for _, candidate := range bankCandidates {
+				exceptions = append(exceptions, identifiedException{kind: "BANK_ONLY", bank: candidate})
+			}
 			continue
 		}
 		if !hasBank {
-			exceptions = append(exceptions, identifiedException{kind: "INTERNAL_ONLY", internal: internalRow})
+			for _, candidate := range internalCandidates {
+				exceptions = append(exceptions, identifiedException{kind: "INTERNAL_ONLY", internal: candidate})
+			}
+			continue
+		}
+		if len(internalCandidates) != 1 || len(bankCandidates) != 1 {
+			candidateIDs := make([]string, 0, len(internalCandidates)+len(bankCandidates))
+			for _, candidate := range internalCandidates {
+				candidateIDs = append(candidateIDs, candidate.ID)
+			}
+			for _, candidate := range bankCandidates {
+				candidateIDs = append(candidateIDs, candidate.ID)
+			}
+			exceptions = append(exceptions, identifiedException{kind: "AMBIGUOUS_MATCH", internal: internalRow, bank: bankRow, candidateTransactionIDs: candidateIDs})
 			continue
 		}
 		switch {
@@ -235,6 +276,13 @@ func classify(internalRows, bankRows []TransactionView) ([]identifiedPair, []ide
 		}
 	}
 	return matches, exceptions
+}
+
+func firstTransaction(rows []TransactionView) TransactionView {
+	if len(rows) == 0 {
+		return TransactionView{}
+	}
+	return rows[0]
 }
 
 func sameCalendarDate(left, right time.Time) bool {
@@ -260,18 +308,20 @@ func (s Service) sourceTransactions(ctx context.Context, batchID string, sourceV
 }
 
 func (s Service) failRun(ctx context.Context, run MatchRunResult, batchID string, sourceVersion int64, actorID, requestID, ip string, cause error) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	recordContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	tx, err := s.DB.BeginTx(recordContext, nil)
 	if err != nil {
 		return fmt.Errorf("%w; additionally failed to record failed run: %v", cause, err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_runs SET state='FAILED',ended_at=now(),error=$2 WHERE id=$1 AND state='PROCESSING'`, run.ID, cause.Error()); err != nil {
+	if _, err := tx.ExecContext(recordContext, `UPDATE reconciliation_runs SET state='FAILED',ended_at=now(),error=$2 WHERE id=$1 AND state='PROCESSING'`, run.ID, cause.Error()); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_batches SET state='FAILED',row_version=row_version+1,updated_at=now() WHERE id=$1 AND state='PROCESSING' AND source_version=$2`, batchID, sourceVersion); err != nil {
+	if _, err := tx.ExecContext(recordContext, `UPDATE reconciliation_batches SET state='FAILED',row_version=row_version+1,updated_at=now() WHERE id=$1 AND state='PROCESSING' AND source_version=$2`, batchID, sourceVersion); err != nil {
 		return err
 	}
-	if err := audit.Append(ctx, tx, actorID, "MATCH_RUN_FAILED", "run", run.ID, nil, map[string]string{"error": cause.Error()}, requestID, ip); err != nil {
+	if err := audit.Append(recordContext, tx, actorID, "MATCH_RUN_FAILED", "run", run.ID, nil, map[string]string{"error": cause.Error()}, requestID, ip); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

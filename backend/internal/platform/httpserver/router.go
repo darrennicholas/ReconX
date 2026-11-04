@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"reconx/backend/internal/modules/identity"
 )
 
@@ -42,7 +44,10 @@ func New(db *sql.DB, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 	})
-	return requestLogger(logger, requestContext(mux))
+	engine := gin.New()
+	engine.Use(gin.Recovery())
+	engine.Any("/*path", gin.WrapH(requestLogger(logger, requestContext(mux))))
+	return engine
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

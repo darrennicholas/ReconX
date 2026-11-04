@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -246,12 +247,19 @@ func (a *api) runMatching(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, _ := identity.PrincipalFromContext(r.Context())
-	item, err := a.reconciliation.RunMatching(r.Context(), r.PathValue("id"), version, principal.UserID, requestID(r), remoteIP(r))
+	item, err := a.reconciliation.StartMatching(r.Context(), r.PathValue("id"), version, principal.UserID, requestID(r), remoteIP(r))
 	if err != nil {
 		a.batchError(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusOK, item, nil)
+	jobContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Minute)
+	go func() {
+		defer cancel()
+		if _, err := a.reconciliation.CompleteMatching(jobContext, item, principal.UserID, requestID(r), remoteIP(r)); err != nil {
+			a.logger.Error("matching run failed", "run_id", item.ID, "batch_id", item.BatchID, "error", err)
+		}
+	}()
+	httpx.JSON(w, r, http.StatusAccepted, item, nil)
 }
 
 func (a *api) latestRun(w http.ResponseWriter, r *http.Request) {
