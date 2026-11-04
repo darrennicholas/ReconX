@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import DataTable from './components/DataTable.vue'
-import { ApiError, apiRequest, downloadFile } from './api'
+import { ApiError, apiRequest, downloadFile, isActionLoading } from './api'
 
 type Page = 'dashboard' | 'batches' | 'batchDetail' | 'imports' | 'transactions' | 'matching' | 'exceptions' | 'exceptionDetail' | 'approvals' | 'reports' | 'accounts' | 'users' | 'audit' | 'settings'
 type Row = Record<string, string>
@@ -882,6 +882,7 @@ function badgeClass(value: string) {
       <template v-else-if="modal === 'userActions'"><label class="field-label">Nama<input v-model="userEditForm.full_name" class="form-control" /></label><label class="field-label">Email<input v-model="userEditForm.email" class="form-control" type="email" /></label><label class="field-label">Role<select v-model="userEditForm.role" class="form-control"><option value="OPERATOR">Operator</option><option value="CHECKER">Checker</option><option value="ADMIN">Admin</option><option value="AUDITOR">Auditor</option></select></label><div class="modal-actions"><button class="button secondary" :disabled="busy" @click="toggleUserActive">{{ selectedUser?.active ? 'Nonaktifkan Akun' : 'Aktifkan Akun' }}</button><button class="button secondary" :disabled="busy" @click="saveUserChanges">Simpan Role</button></div><label class="field-label">Password baru<input v-model="resetPasswordValue" class="form-control" type="password" minlength="12" placeholder="Minimum 12 karakter" /></label><div class="modal-actions"><button class="button primary" :disabled="busy" @click="resetUserPassword">Reset Password</button></div></template>
       <div v-if="modal !== 'approval' && modal !== 'userActions' && modal !== 'profile' && modal !== 'transaction'" class="modal-actions"><button class="button secondary" @click="modal = ''">Batal</button><button class="button primary" :disabled="busy" @click="submitModal">{{ busy ? 'Menyimpan…' : modal === 'proposal' ? 'Kirim untuk Approval' : modal === 'editBatch' ? 'Simpan Perubahan' : 'Simpan' }}</button></div>
     </section></div></Transition>
+    <Transition name="loading"><div v-if="isActionLoading || busy" class="loading-overlay" role="status" aria-live="polite" aria-label="Sedang memproses"><div class="loading-card"><span class="loading-spinner" aria-hidden="true"></span><span><b>Sedang memproses</b><small>Mohon tunggu sebentar</small></span></div></div></Transition>
     <div v-if="toast" class="toast-message"><span>✓</span>{{ toast }}</div>
   </div>
 </template>

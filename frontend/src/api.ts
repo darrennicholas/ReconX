@@ -1,3 +1,8 @@
+import { computed, ref } from 'vue'
+
+const pendingActions = ref(0)
+export const isActionLoading = computed(() => pendingActions.value > 0)
+
 export interface ApiEnvelope<T> {
   success: boolean
   data?: T
@@ -29,20 +34,30 @@ export async function apiRequest<T>(path: string, options: RequestInit & { idemp
     if (options.idempotent) headers.set('Idempotency-Key', crypto.randomUUID())
   }
   headers.set('X-Request-ID', crypto.randomUUID())
-  const response = await fetch(path, { ...options, headers, credentials: 'include' })
-  const envelope = await response.json().catch(() => ({})) as ApiEnvelope<T>
-  if (!response.ok || envelope.success === false) {
-    throw new ApiError(envelope.error?.message ?? `Request gagal (${response.status})`, response.status, envelope.data)
+  if (mutating) pendingActions.value++
+  try {
+    const response = await fetch(path, { ...options, headers, credentials: 'include' })
+    const envelope = await response.json().catch(() => ({})) as ApiEnvelope<T>
+    if (!response.ok || envelope.success === false) {
+      throw new ApiError(envelope.error?.message ?? `Request gagal (${response.status})`, response.status, envelope.data)
+    }
+    return { data: envelope.data as T, response }
+  } finally {
+    if (mutating) pendingActions.value--
   }
-  return { data: envelope.data as T, response }
 }
 
 export async function downloadFile(path: string, filename: string): Promise<void> {
-  const response = await fetch(path, { credentials: 'include', headers: { 'X-Request-ID': crypto.randomUUID() } })
-  if (!response.ok) throw new ApiError('Gagal mengunduh file laporan.', response.status)
-  const link = document.createElement('a')
-  link.href = URL.createObjectURL(await response.blob())
-  link.download = filename
-  link.click()
-  URL.revokeObjectURL(link.href)
+  pendingActions.value++
+  try {
+    const response = await fetch(path, { credentials: 'include', headers: { 'X-Request-ID': crypto.randomUUID() } })
+    if (!response.ok) throw new ApiError('Gagal mengunduh file laporan.', response.status)
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(await response.blob())
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(link.href)
+  } finally {
+    pendingActions.value--
+  }
 }

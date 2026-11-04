@@ -252,3 +252,31 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .settings-value.muted { color: #758594; background: #f2f5f7; }
 .settings-note { margin: 18px 0 0; color: #758594; font-size: 12px; line-height: 1.6; }
 @media (max-width: 720px) { .settings-row { flex-wrap: wrap; padding: 12px 0; }.settings-row .form-control.compact { width: 100%; } }
+
+/* Feedback for navigation and actions */
+.nav-item, .settings-nav button, .tabs button, .button, .top-icon, .profile-button,
+.link-button, .back-link, .row-action button, .notification-item, .filter-icon {
+  transition: color .18s ease, background-color .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.settings-nav button:hover, .tabs button:hover { color: #087e74; background: #f0faf8; }
+.nav-item:hover, .settings-nav button:hover { transform: translateX(2px); }
+.top-icon:hover, .profile-button:hover, .filter-icon:hover { color: #087e74; background: #eff8f6; }
+.link-button:hover, .back-link:hover { color: #075e56; text-decoration: underline; }
+.button:active:not(:disabled) { transform: translateY(0) scale(.98); }
+.panel, .kpi-card { transition: border-color .2s ease, box-shadow .2s ease; }
+.panel:hover, .kpi-card:hover { border-color: #d6e8e5; box-shadow: 0 5px 18px rgba(18, 40, 63, .06); }
+.data-table tbody tr { transition: background-color .18s ease; }
+.loading-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(16, 40, 63, .22); }
+.loading-card { display: flex; align-items: center; gap: 14px; min-width: 220px; padding: 17px 20px; border: 1px solid #e4eeed; border-radius: 14px; background: #fff; color: #203b4f; box-shadow: 0 14px 40px rgba(16, 40, 63, .18); }
+.loading-card b, .loading-card small { display: block; }
+.loading-card b { font-size: 13px; }
+.loading-card small { margin-top: 4px; color: #8394a0; font-size: 11px; }
+.loading-spinner { width: 26px; height: 26px; flex: 0 0 26px; border: 3px solid #d8f0ec; border-top-color: #0d9488; border-radius: 50%; animation: loading-spin .8s linear infinite; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+.loading-enter-active, .loading-leave-active { transition: opacity .16s ease; }
+.loading-enter-from, .loading-leave-to { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .nav-item, .settings-nav button, .tabs button, .button, .top-icon, .profile-button, .link-button, .back-link, .row-action button, .notification-item, .filter-icon, .panel, .kpi-card, .data-table tbody tr, .loading-enter-active, .loading-leave-active { transition: none; }
+  .nav-item:hover, .settings-nav button:hover, .button:active:not(:disabled) { transform: none; }
+  .loading-spinner { animation: none; }
+}
