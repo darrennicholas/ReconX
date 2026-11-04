@@ -24,6 +24,7 @@ const toast = ref('')
 const showNotifications = ref(false)
 const selectedFile = ref('')
 const fileToUpload = ref<File | null>(null)
+const importStage = ref(1)
 const loginEmail = ref('')
 const loginPassword = ref('')
 const showLoginPassword = ref(false)
@@ -564,7 +565,20 @@ async function runAction() {
 
 function onFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
-  if (file) { fileToUpload.value = file; selectedFile.value = file.name }
+  if (file) { fileToUpload.value = file; selectedFile.value = file.name; importStage.value = 3 }
+}
+
+function clearImportFile() {
+  fileToUpload.value = null
+  selectedFile.value = ''
+  importStage.value = selectedBatchID.value ? 2 : 1
+  const input = document.getElementById('file-input') as HTMLInputElement | null
+  if (input) input.value = ''
+}
+
+function changeImportBatch() {
+  importStage.value = selectedBatchID.value ? (fileToUpload.value ? 3 : 2) : 1
+  void loadImports()
 }
 
 async function downloadReport() {
@@ -623,10 +637,11 @@ async function submitModal() {
 async function uploadImport() {
   if (!fileToUpload.value || !selectedBatchID.value) { showToast('Pilih file dan batch terlebih dahulu.'); return }
   const form = new FormData(); form.set('file', fileToUpload.value); form.set('source_type', importSource.value)
+  importStage.value = 3
   busy.value = true
   try {
     await apiRequest(`/api/v1/batches/${selectedBatchID.value}/imports`, { method: 'POST', idempotent: true, body: form })
-    fileToUpload.value = null; selectedFile.value = ''; await loadWorkspace(); await loadImports(); showToast('CSV tervalidasi dan diimpor.')
+    fileToUpload.value = null; importStage.value = 4; await loadWorkspace(); await loadImports(); showToast('CSV tervalidasi dan diimpor.')
   } catch (error) {
     const data = error instanceof ApiError ? error.data as { errors?: { line: number; field: string; message: string }[] } | undefined : undefined
     const first = data?.errors?.[0]
@@ -908,9 +923,12 @@ function badgeClass(value: string) {
 
         <section v-else-if="page === 'imports'" class="page-grid import-layout">
           <article class="panel import-card"><div class="panel-heading"><div><h2>Unggah File Transaksi</h2><p>CSV divalidasi seluruhnya sebelum transaksi disimpan.</p></div><span class="step-count">CSV · 10 MB maks.</span></div>
+            <ol class="import-stepper" aria-label="Tahapan import">
+              <li v-for="(step, index) in ['Pilih batch', 'Pilih file', 'Validasi & import', 'Selesai']" :key="step" :class="{ active: importStage === index + 1, complete: importStage > index + 1 }"><span>{{ importStage > index + 1 ? '✓' : index + 1 }}</span><b>{{ step }}</b></li>
+            </ol>
             <div class="upload-grid"><button class="drop-zone" @click="openFilePicker"><span class="upload-cloud">⇧</span><b>{{ selectedFile || 'Pilih file CSV' }}</b><small>Kolom wajib: reference_id, date, direction, amount, currency</small><span class="button primary small-button">Pilih File</span><small class="format-note">Data ditolak seluruhnya bila ada baris tidak valid.</small></button>
-              <div class="upload-side"><div class="field-label">Sumber Data</div><select v-model="importSource" class="form-control"><option value="INTERNAL">INTERNAL · Catatan perusahaan</option><option value="BANK">BANK · Mutasi bank</option></select><div class="field-label spaced">Batch Rekonsiliasi</div><select v-model="selectedBatchID" @change="loadImports" class="form-control"><option value="" disabled>Pilih batch draft</option><option v-for="batch in rawBatches.filter(item => item.state === 'DRAFT')" :key="batch.id" :value="batch.id">{{ batch.batch_no }} · {{ formatDate(batch.period_from) }}</option></select><div class="check-note"><span>✓</span><div><b>Import atomik</b><small>File tersimpan secara private dan transaksi aktif hanya dibuat setelah seluruh baris lolos validasi.</small></div></div></div></div>
-            <input id="file-input" class="hidden-input" type="file" accept=".csv,text/csv" @change="onFile" /><div class="import-actions"><button class="button secondary" data-no-loading @click="selectedFile = ''; fileToUpload = null">Batal</button><button class="button primary" :disabled="!fileToUpload || busy" @click="uploadImport">{{ busy ? 'Memproses…' : 'Validasi & Import' }} <span>→</span></button></div>
+              <div class="upload-side"><div class="field-label">Sumber Data</div><select v-model="importSource" class="form-control"><option value="INTERNAL">INTERNAL · Catatan perusahaan</option><option value="BANK">BANK · Mutasi bank</option></select><div class="field-label spaced">Batch Rekonsiliasi</div><select v-model="selectedBatchID" @change="changeImportBatch" class="form-control"><option value="" disabled>Pilih batch draft</option><option v-for="batch in rawBatches.filter(item => item.state === 'DRAFT')" :key="batch.id" :value="batch.id">{{ batch.batch_no }} · {{ formatDate(batch.period_from) }}</option></select><div class="check-note"><span>✓</span><div><b>Import atomik</b><small>File tersimpan secara private dan transaksi aktif hanya dibuat setelah seluruh baris lolos validasi.</small></div></div></div></div>
+            <input id="file-input" class="hidden-input" type="file" accept=".csv,text/csv" @change="onFile" /><div class="import-actions"><button class="button secondary" data-no-loading @click="clearImportFile">Batal</button><button class="button primary" :disabled="!fileToUpload || busy" @click="uploadImport">{{ busy ? 'Memproses…' : 'Validasi & Import' }} <span>→</span></button></div>
           </article>
           <article class="panel history-card"><div class="panel-heading"><div><h2>Riwayat Import</h2><p>Satu file valid untuk setiap sumber per versi batch.</p></div></div><div v-for="item in rawImports" :key="item.id" class="history-item"><span class="file-icon">CSV</span><span class="file-info"><b>{{ item.original_name }}</b><small>{{ item.source_type }} · {{ item.state }} · {{ item.rows_count }} baris</small></span><button class="link-button" @click="downloadOriginalImport(item)">File</button><button v-if="item.has_error_report" class="link-button" @click="downloadImportErrors(item)">Unduh Error</button></div><p v-if="!rawImports.length" class="login-footnote">Belum ada file pada batch terpilih.</p></article>
         </section>
