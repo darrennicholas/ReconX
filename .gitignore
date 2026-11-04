@@ -40,3 +40,8 @@ frontend/pnpm-debug.log*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local tooling and transient build metadata
+*.tsbuildinfo
+*.swp
+*.bak

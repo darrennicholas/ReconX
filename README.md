@@ -23,6 +23,20 @@ frontend/src/App.vue              UI ReconX dan alur API
 frontend/src/api.ts               Session, CSRF, request ID, idempotency
 ```
 
+## Role dan hak akses
+
+| Aktivitas | Admin | Operator | Checker | Auditor |
+| --- | --- | --- | --- | --- |
+| Dashboard, rekening, batch dan hasil | Lihat | Lihat batch sendiri | Lihat | Lihat |
+| Kelola pengguna dan rekening | Kelola | — | — | — |
+| Buat/edit batch, import dan matching | — | Batch sendiri | — | — |
+| Investigasi dan usulkan manual match | — | Batch sendiri / ditugaskan | — | — |
+| Setujui/tolak dan tutup batch | — | — | Ya, bukan pengusul | — |
+| Laporan dan ekspor | Ya | Batch sendiri | Ya | Ya |
+| Audit log | Ya | — | Ya | Ya |
+| Pengaturan | Kelola | — | Lihat | Lihat |
+
+Admin mengelola akses dan konfigurasi. Operator menjalankan rekonsiliasi. Checker memeriksa keputusan dan menutup batch. Auditor meninjau hasil dan riwayat. Persetujuan memerlukan Checker yang berbeda dari pembuat pengajuan.
 ## Alur bisnis (FSD §4)
 
 1. Operator membuat batch untuk rekening dan periode tertentu. Backend menolak periode yang bertumpang-tindih pada rekening yang sama.
@@ -144,4 +158,4 @@ cd C:\ReconX\frontend
 npm run build
 ```
 
-Build hanya memeriksa compile/bundle; belum menjalankan migration atau uji integrasi terhadap database Laragon.
+Build memeriksa kompilasi dan bundling aplikasi.

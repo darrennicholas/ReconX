@@ -752,7 +752,7 @@ function badgeClass(value: string) {
             <p v-if="loginError" class="login-error">{{ loginError }}</p>
             <button class="button primary login-button" :disabled="busy || apiStatus !== 'online'">{{ busy ? 'Memproses…' : 'Masuk' }}</button>
           </form>
-          <p class="login-footnote">API {{ apiStatus }} · Database harus sudah dimigrasikan dan akun Admin sudah di-seed.</p>
+          <p v-if="apiStatus === 'offline'" class="login-error">Layanan belum tersedia. Periksa koneksi backend.</p>
         </section>
       </main>
     </template>
@@ -778,7 +778,6 @@ function badgeClass(value: string) {
       <header class="topbar">
         <div class="crumb"><span>{{ currentNavGroup }}</span><span class="crumb-slash">/</span><strong>{{ currentTitle }}</strong></div>
         <div class="topbar-actions">
-          <span class="demo-chip"><i></i> DATA API LOKAL</span>
           <div class="top-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input v-model="search" aria-label="Cari" placeholder="Cari apa saja..." /></div>
           <div class="notification-wrap"><button class="top-icon" aria-label="Notifikasi" @click="showNotifications = !showNotifications"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><i v-if="notifications.some(item => !item.read_at)"></i></button><div v-if="showNotifications" class="notification-popover"><strong>Notifikasi</strong><button v-for="item in notifications" :key="item.id" class="notification-item" :class="{ unread: !item.read_at }" @click="openNotification(item)"><span class="notice-dot" :class="{ 'amber-dot': item.type.includes('EXCEPTION') }"></span> {{ item.title }} · {{ item.body }}</button><p v-if="!notifications.length">Belum ada notifikasi.</p></div></div>
           <span class="top-divider"></span><button class="profile-button" @click="modal = 'profile'"><span class="user-avatar small-avatar">{{ currentUser.full_name.slice(0, 2).toUpperCase() }}</span><span class="profile-name">{{ currentUser.full_name }}<small>{{ currentUser.role }}</small></span><span class="chevron">⌄</span></button>
@@ -787,8 +786,6 @@ function badgeClass(value: string) {
 
       <div class="content-area">
         <div class="page-header"><div><div class="breadcrumb-mobile">Workspace <span>/</span> {{ currentTitle }}</div><h1>{{ currentTitle }}</h1><p>{{ subtitles[page] }}</p></div><div class="header-actions"><div v-if="page === 'dashboard'" class="dashboard-filter-controls"><input v-model="dashboardFrom" aria-label="Dari tanggal" type="date" /><input v-model="dashboardTo" aria-label="Sampai tanggal" type="date" /><select v-model="dashboardAccountID" aria-label="Rekening"><option value="">Semua rekening</option><option v-for="account in rawAccounts" :key="account.id" :value="account.id">{{ account.account_code }}</option></select><button class="button secondary" @click="loadDashboard">Terapkan</button></div><button v-if="pageAction" class="button primary" @click="runAction"><span class="button-plus">＋</span>{{ pageAction }}</button></div></div>
-
-        <div class="demo-banner"><span class="demo-banner-icon">i</span><span><strong>Mode lokal.</strong> Gunakan data sintetis; jangan unggah data nasabah atau bank nyata. Sistem tidak terhubung ke bank, memindahkan dana, atau memposting jurnal.</span><span class="api-state"><i :class="apiStatus"></i> API {{ apiStatus }}</span></div>
 
         <section v-if="page === 'dashboard'" class="dashboard-page">
           <div class="kpi-grid">
