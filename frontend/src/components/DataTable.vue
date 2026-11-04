@@ -52,11 +52,11 @@ function badgeFor(value: string) {
       <tbody>
         <tr v-for="(row, index) in sortedRows" :key="index">
           <td v-for="column in columns" :key="column.key">
-            <button v-if="linkKey && column.key === linkKey" class="table-link" @click="emit('open', row)">{{ row[column.key] }}</button>
+            <button v-if="linkKey && column.key === linkKey" class="table-link" data-loading @click="emit('open', row)">{{ row[column.key] }}</button>
             <span v-else-if="column.key === 'status'" :class="badgeFor(row[column.key] ?? '')">{{ row[column.key] }}</span>
             <span v-else>{{ row[column.key] }}</span>
           </td>
-          <td class="row-action"><button aria-label="Lihat detail" @click="emit('open', row)">↗</button></td>
+          <td class="row-action"><button data-loading aria-label="Lihat detail" @click="emit('open', row)">↗</button></td>
         </tr>
         <tr v-if="!rows.length">
           <td :colspan="columns.length + 1" class="empty-row">Tidak ada data yang sesuai dengan filter.</td>

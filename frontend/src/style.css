@@ -377,3 +377,22 @@ body { background: var(--canvas); }
   .import-stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 8px; }
   .import-stepper li:not(:last-child)::after { display: none; }
 }
+
+/* Keep tab toggles compact and prevent the page indicator from wrapping. */
+.table-toolbar .tabs button:focus-visible,
+.detail-tabs .tabs button:focus-visible,
+.settings-nav button:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid rgba(13, 148, 136, .38);
+  outline-offset: -2px;
+}
+.table-toolbar .tabs button:focus:not(:focus-visible),
+.detail-tabs .tabs button:focus:not(:focus-visible),
+.settings-nav button:focus:not(:focus-visible) { outline: none; }
+.table-footer .current-page {
+  width: auto;
+  min-width: 54px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.table-footer button { flex: 0 0 auto; }
