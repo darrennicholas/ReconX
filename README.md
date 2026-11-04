@@ -114,6 +114,10 @@ The application schema is intentionally undefined at this stage. There are no pr
 
 The Docker Compose service creates an empty database named `reconx`; an existing PostgreSQL database can be used through `DATABASE_URL`. Removing migration files from the repository does not delete tables already present in a local PostgreSQL instance. In HeidiSQL, connect to the configured database and inspect its `public` schema. `pg_catalog`, `information_schema`, and `pg_toast` are PostgreSQL-managed schemas.
 
+## Frontend prototype
+
+The Vue UI follows the ReconX FSD visual direction and includes demo screens for Dashboard, Reconciliation Batches, Batch Detail, Import Data, Transactions, Matching Results, Exceptions, Exception Detail, Approval Queue, Reports, Bank Accounts, User Management, Audit Logs, and Settings. Navigation, filters, detail views, demo forms, file selection preview, notification menu, and sample CSV export are UI-only interactions. The displayed figures are illustrative; uploads, approvals, settings, and records are not persisted or connected to the API yet.
+
 ## Configuration
 
 | Variable | Default | Description |
