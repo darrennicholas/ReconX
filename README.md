@@ -1,94 +1,101 @@
 # ReconX
 
-ReconX is a starter for a **Bank Transaction Reconciliation & Exception Management System**. It uses a modular monolith: one Go API and one PostgreSQL database, with business capabilities kept in separate Go modules.
+ReconX adalah aplikasi **Bank Transaction Reconciliation & Exception Management** dengan arsitektur modular monolith. Backend memakai Go dan PostgreSQL; frontend memakai Vue 3, TypeScript, dan Vite.
 
-## Technology
+> FSD MVP hanya mengizinkan data sintetis. Aplikasi ini tidak terhubung ke bank, tidak memindahkan dana, dan tidak memposting jurnal. Jangan unggah data nasabah atau bank nyata.
 
-- Backend: Go, `net/http`, PostgreSQL through `pgx`
-- Frontend: Vue 3, TypeScript, Vite
-- Local database: PostgreSQL through Docker Compose or an existing local PostgreSQL installation
+## Teknologi dan susunan kode
 
-## Request and startup flow
-
-```mermaid
-flowchart LR
-  Browser[Vue 3 app :5173] -->|/api proxy| API[Go API :8080]
-  API --> DB[(PostgreSQL :5432)]
-```
-
-1. The API loads configuration from the project `.env` file (or process environment variables).
-2. It opens a PostgreSQL connection and checks that the database is reachable.
-3. It starts the HTTP server and logs requests. `Ctrl+C` triggers graceful shutdown.
-4. Vite serves the Vue app and proxies `/api/*` requests to the Go API.
-5. The current dashboard calls `GET /api/v1/health` and displays the API connection state.
-
-## Repository layout
+- **Backend:** Go `net/http`, PostgreSQL melalui `pgx`, satu proses API.
+- **Frontend:** Vue 3, TypeScript, Vite, `fetch` API client dengan session cookie.
+- **Modul bisnis:** `identity` (auth/RBAC), `banking` (rekening), `reconciliation` (batch, import, matching, laporan), dan `exceptions` (investigation, proposal, approval).
+- **Platform:** konfigurasi, koneksi database, migration runner manual, audit append-only, HTTP envelope, CSRF dan idempotency.
 
 ```text
-backend/
-  cmd/api/                         API entry point
-  internal/platform/config/        Environment configuration
-  internal/platform/database/      PostgreSQL connection
-  internal/platform/httpserver/    HTTP routes and request logging
-  internal/modules/                identity, banking, reconciliation, exceptions
-    identity/                      MVP RBAC policy and route guard
-    banking/                       Synthetic account and transaction contracts
-    reconciliation/                Batch, match, run, approval, and close contracts
-    exceptions/                    Exception types and references
-  examples/                        Synthetic FSD CSV fixtures
-frontend/
-  src/App.vue                      Initial dashboard
-  src/style.css                    Dashboard styles
-  vite.config.ts                   Development server and API proxy
-docker-compose.yml                 Local PostgreSQL service
-.env.example                       Safe local configuration template
+backend/cmd/api/                  API server
+backend/cmd/migrate/              Jalankan migration secara eksplisit
+backend/cmd/seed/                 Buat Admin awal jika belum ada user
+backend/internal/modules/         Modul domain dan service
+backend/internal/platform/        Database, HTTP, migration, audit
+backend/internal/platform/migrate/001_initial.sql
+backend/examples/                 Fixture CSV sintetis
+frontend/src/App.vue              UI ReconX dan alur API
+frontend/src/api.ts               Session, CSRF, request ID, idempotency
 ```
 
-The modules are intended to own their domain logic and persistence. Cross-module work should go through module services rather than reading another module's tables directly.
+## Alur bisnis (FSD §4)
 
-## Run locally
+1. Operator membuat batch untuk rekening dan periode tertentu. Backend menolak periode yang bertumpang-tindih pada rekening yang sama.
+2. Operator mengunggah satu CSV `INTERNAL` dan satu `BANK`. Seluruh file divalidasi dulu; jika satu baris tidak sah, tidak ada transaksi dari file itu yang disimpan.
+3. Setelah kedua sumber valid, batch menjadi `READY`. Operator menjalankan matching M01: reference, nominal, arah, mata uang, dan tanggal harus sama.
+4. Batch masuk `REVIEW`. Hasil berupa pasangan otomatis dan exception seperti `AMOUNT_MISMATCH`, `DATE_VARIANCE`, `INTERNAL_ONLY`, dan `BANK_ONLY`.
+5. Operator dapat menugaskan exception dan menambahkan catatan. Manual match hanya dapat diajukan untuk `DATE_VARIANCE` yang memenuhi syarat, lalu harus diputuskan Checker yang berbeda dari maker.
+6. Batch hanya bisa diminta untuk ditutup jika seluruh transaksi sudah cocok serta tidak ada exception atau approval yang tertunda. Checker menyetujui/menolak permintaan; hanya snapshot yang disetujui yang dapat ditutup. Batch tertutup tidak dapat diedit.
+7. Setiap perubahan penting ditulis ke audit log. Create/import/matching/proposal/approval memakai `Idempotency-Key`; perubahan state batch memakai `If-Match` dan row version.
 
-Requirements: Go 1.23 or newer, Node.js 22 or newer, npm, and either Docker Compose or PostgreSQL.
+State utama batch: `DRAFT → READY → PROCESSING → REVIEW → PENDING_APPROVAL → APPROVED → CLOSED`. Import ulang/koreksi sumber menaikkan `source_version`, mengarsipkan hasil lama, dan membutuhkan matching baru. Batch `FAILED` dapat dicoba ulang; batch `DRAFT` dapat dibatalkan.
 
-### Option A: Docker PostgreSQL
+## Fitur MVP (FSD §5)
 
-From the project root in PowerShell:
+- Login/logout, session server, profil sesi, bootstrap Admin, manajemen user dan role tetap.
+- Dashboard dengan filter periode/rekening, tren matching, distribusi status batch, dan top exception; rekening sumber serta daftar/detail batch.
+- Upload CSV, validasi atomik, laporan error CSV, penyimpanan file private.
+- Daftar transaksi dengan pencarian/filter/pengurutan/paginasi lokal, detail raw row, exact matching, hasil run, dan exception workbench.
+- Assignment, catatan, lampiran evidence private (PDF/PNG/JPEG/TXT maks. 5 MB), proposal manual match, maker-checker approval, submit/close batch.
+- CSV laporan, audit log, notifikasi, dan pengaturan yang diizinkan FSD.
+- RBAC server-side: Admin, Operator, Checker, Auditor; Operator dibatasi ke batch miliknya; Checker tidak dapat menyetujui request yang dibuatnya sendiri.
+
+## Database
+
+Migration ada di source code, tetapi **API tidak menjalankannya saat startup**. Database lokal tidak berubah sampai Anda menjalankan `cmd/migrate`. Migration membuat schema MVP dan data referensi role/permission/settings; ia tidak memasukkan batch, transaksi, atau rekening contoh. `cmd/seed` membuat satu Admin awal bila tabel user masih kosong.
+
+Gunakan database PostgreSQL kosong yang memang disiapkan untuk ReconX. Perintah migration akan membuat tabel di database pada `DATABASE_URL`.
+
+### Konfigurasi lokal
+
+1. Salin contoh env dari root project dan sesuaikan URL database:
 
 ```powershell
+cd C:\ReconX
 Copy-Item .env.example .env
-docker compose up -d postgres
 ```
 
-### Option B: Laragon PostgreSQL
+Untuk Laragon PostgreSQL (default port `5432`), ubah `.env` agar `DATABASE_URL` menunjuk ke database ReconX Anda, contohnya:
 
-The workspace `.env` can target a local Laragon instance. For a fresh clone, copy the example and set `DATABASE_URL` to the values for your PostgreSQL server. For the Laragon setup used during development:
-
-```powershell
-Copy-Item .env.example .env
-(Get-Content .env) -replace '^DATABASE_URL=.*$', 'DATABASE_URL=postgres://postgres@127.0.0.1:5432/reconx?sslmode=disable' | Set-Content .env
+```text
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/reconx?sslmode=disable
 ```
 
-Start PostgreSQL from Laragon. Create the application database once if it does not exist:
+Tambahkan password di URL jika akun PostgreSQL Anda memilikinya. Database `reconx` perlu dibuat sekali di server PostgreSQL, misalnya dari HeidiSQL atau `psql`. HeidiSQL hanya menampilkan tabel yang ada pada database/schema yang sedang dipilih.
 
-```powershell
-& 'C:\laragon\bin\PostgreSQL\18\bin\psql.exe' -U postgres -h 127.0.0.1 -p 5432 -d postgres -c 'CREATE DATABASE reconx;'
-```
-
-The Laragon example assumes its local PostgreSQL authentication permits the `postgres` user without a password. Adjust `DATABASE_URL` if your local PostgreSQL credentials or port differ. Do not start the Docker PostgreSQL service on port 5432 while Laragon already uses that port.
-
-### Start the API and frontend
-
-Open two PowerShell terminals.
-
-Terminal 1 — backend:
+2. Jalankan PostgreSQL. Dari terminal PowerShell backend, buat schema aplikasi secara eksplisit:
 
 ```powershell
 cd C:\ReconX\backend
-go mod tidy
+go run ./cmd/migrate
+```
+
+3. Tetapkan nilai Admin awal untuk sesi PowerShell ini, lalu buat user Admin. Password minimal 12 karakter:
+
+```powershell
+$env:BOOTSTRAP_ADMIN_NAME = 'ReconX Admin'
+$env:BOOTSTRAP_ADMIN_EMAIL = 'admin@localhost'
+$env:BOOTSTRAP_ADMIN_PASSWORD = 'GantiDenganPasswordKuat12!'
+go run ./cmd/seed
+```
+
+Seed aman untuk diulang: jika sudah ada user, Admin kedua tidak dibuat. Simpan password milik sendiri dan jangan commit `.env` atau kredensial.
+
+4. Jalankan API dan frontend di dua terminal:
+
+Terminal backend:
+
+```powershell
+cd C:\ReconX\backend
 go run ./cmd/api
 ```
 
-Terminal 2 — frontend:
+Terminal frontend:
 
 ```powershell
 cd C:\ReconX\frontend
@@ -96,49 +103,45 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:5173>. The API listens on <http://localhost:8080>.
+Buka <http://localhost:5173>. API berjalan di <http://localhost:8080>. Vite meneruskan `/api/*` ke API. Login memakai email/password Admin yang baru di-seed.
 
-To create a production frontend bundle:
+Untuk Docker PostgreSQL, `.env.example` memakai user/database `reconx`; jalankan `docker compose up -d postgres` hanya jika port 5432 tidak sedang dipakai PostgreSQL Laragon. Jangan jalankan dua server PostgreSQL pada port yang sama.
+
+## Endpoint API
+
+Prefix: `/api/v1`
+
+| Kelompok | Endpoint utama |
+| --- | --- |
+| Status/RBAC | `GET /health`, `GET /ready`, `GET /meta/rbac` |
+| Session | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` |
+| Users/rekening | `/users`, `/users/{id}`, `/users/{id}/reset-password`, `/bank-accounts` |
+| Batch/import | `/batches`, `/batches/{id}`, `/batches/{id}/imports`, `/imports/{id}/errors`, `/imports/{id}/file` |
+| Matching/transaksi | `/batches/{id}/match-runs`, `/batches/{id}/matches`, `/transactions` |
+| Exception/approval | `/exceptions`, `/exceptions/{id}/actions`, `/exceptions/{id}/evidence`, `/exceptions/{id}/manual-match-proposals`, `/approvals` |
+| Dashboard/operasi | `/dashboard/summary`, `/reports/reconciliations`, `/reports/reconciliations/export`, `/audit-logs`, `/notifications`, `/settings` |
+
+Respons JSON menggunakan envelope `{ success, data, meta, error, request_id }`. Session cookie `HttpOnly`/`SameSite=Strict`; request perubahan memakai token CSRF. Import disimpan di `IMPORT_STORAGE_DIR` (default `backend/private-data/imports`), di luar folder public frontend.
+
+## CSV sintetis
+
+`backend/examples/internal.csv` dan `backend/examples/bank.csv` berisi fixture dengan header:
+
+```csv
+reference_id,date,direction,amount,currency
+TRX001,2026-11-03,CREDIT,500000,IDR
+```
+
+Unggah satu file pada source `INTERNAL`, lalu file satu lagi pada source `BANK` untuk batch yang sama. Reference dalam setiap file harus unik; tanggal mesti berada dalam periode batch; currency MVP adalah IDR.
+
+## Validasi build
 
 ```powershell
+cd C:\ReconX\backend
+go build ./...
+
+cd C:\ReconX\frontend
 npm run build
 ```
 
-## API endpoints
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/v1/health` | Liveness check for the HTTP API |
-| `GET` | `/api/v1/ready` | Readiness check that also pings PostgreSQL |
-| `GET` | `/api/v1/meta/rbac` | Read-only MVP role and permission definitions from FSD §3.1–3.3 |
-
-Vite proxies browser requests from `/api` to `API_PROXY_TARGET` (default `http://localhost:8080`).
-
-## FSD sections 1–3.3
-
-- The MVP is a synthetic reconciliation demonstration. It must not use real customer or bank data, initiate payments, move funds, post to a ledger, or connect to a real bank.
-- The sample end-to-end scenario from FSD §2 is in `backend/examples/internal.csv` and `backend/examples/bank.csv`. The expected outcomes are TRX001 `MATCHED`, TRX002 `AMOUNT_MISMATCH`, TRX003 `INTERNAL_ONLY`, and TRX004 `BANK_ONLY`. The sample batch has three active exceptions and cannot be closed.
-- The frontend shows that same sample batch and its four reference outcomes. The approval queue is empty because this sample has unresolved exceptions. UI forms, file selection, reports, and sample data are demonstrations; they do not persist records or run reconciliation.
-- Fixed roles and the 19 permission keys from FSD §3.3 are defined in `backend/internal/modules/identity/rbac.go`. The package contains permission checks, own-profile and Operator ownership scoping, Checker-only approval checks, maker/checker separation, and an HTTP permission middleware for future protected routes. Domain contracts in the banking, reconciliation, and exceptions modules represent the §1 concepts; they are not database models or persisted records.
-- The current API has no login/session implementation or business endpoints, so no authenticated principal is populated and end-user permissions are not yet enforced on business operations. `GET /api/v1/meta/rbac` only exposes the static role/permission catalog. Do not treat this prototype as production access control.
-
-## Database schema
-
-The application schema is intentionally undefined at this stage. There are no project migrations or application tables in the code, and API startup does not create or modify tables. The API only checks that the configured PostgreSQL database is reachable. We can design the schema and add migrations after the reconciliation requirements are clear.
-
-The Docker Compose service creates an empty database named `reconx`; an existing PostgreSQL database can be used through `DATABASE_URL`. Removing migration files from the repository does not delete tables already present in a local PostgreSQL instance. In HeidiSQL, connect to the configured database and inspect its `public` schema. `pg_catalog`, `information_schema`, and `pg_toast` are PostgreSQL-managed schemas.
-
-## Frontend prototype
-
-The Vue UI follows the ReconX FSD visual direction and includes demo screens for Dashboard, Reconciliation Batches, Batch Detail, Import Data, Transactions, Matching Results, Exceptions, Exception Detail, Approval Queue, Reports, Bank Accounts, User Management, Audit Logs, and Settings. Navigation, filters, detail views, demo forms, file selection preview, notification menu, and sample CSV export are UI-only interactions. The displayed figures are illustrative; uploads, approvals, settings, and records are not persisted or connected to the API yet.
-
-## Configuration
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `APP_ENV` | `development` | Environment label included in API startup logs |
-| `API_ADDR` | `:8080` | HTTP listen address |
-| `DATABASE_URL` | Local `reconx` PostgreSQL URL | PostgreSQL connection string |
-| `API_PROXY_TARGET` | `http://localhost:8080` | Vite development proxy target |
-
-Keep local secrets and credentials in `.env`; only `.env.example` belongs in Git.
+Build hanya memeriksa compile/bundle; belum menjalankan migration atau uji integrasi terhadap database Laragon.

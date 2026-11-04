@@ -38,10 +38,11 @@ func New(db *sql.DB, logger *slog.Logger) http.Handler {
 			},
 		})
 	})
+	registerFeatureRoutes(mux, db, logger)
 	mux.HandleFunc("GET /api/v1/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 	})
-	return requestLogger(logger, mux)
+	return requestLogger(logger, requestContext(mux))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

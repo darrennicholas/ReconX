@@ -2,10 +2,11 @@ package identity
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
+
+	"reconx/backend/internal/platform/httpx"
 )
 
 type Role string
@@ -245,23 +246,17 @@ func RequirePermission(permission Permission, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := PrincipalFromContext(r.Context())
 		if !ok {
-			writeAuthorizationError(w, http.StatusUnauthorized, "unauthenticated")
+			httpx.Error(w, r, http.StatusUnauthorized, "unauthenticated", "Login diperlukan.")
 			return
 		}
 		if err := Authorize(principal, permission); err != nil {
 			if errors.Is(err, ErrUnauthenticated) {
-				writeAuthorizationError(w, http.StatusUnauthorized, "unauthenticated")
+				httpx.Error(w, r, http.StatusUnauthorized, "unauthenticated", "Sesi tidak sah atau sudah tamat.")
 				return
 			}
-			writeAuthorizationError(w, http.StatusForbidden, "forbidden")
+			httpx.Error(w, r, http.StatusForbidden, "forbidden", "Akses tidak diizinkan.")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func writeAuthorizationError(w http.ResponseWriter, status int, code string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 }

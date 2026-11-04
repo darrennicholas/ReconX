@@ -27,6 +27,8 @@ frontend/pnpm-debug.log*
 /backend/coverage.out
 /backend/tmp/
 /backend/vendor/
+/backend/private-data/
+/private-data/
 
 # Local databases and logs
 *.log
