@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: reconx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: reconx
+      POSTGRES_USER: reconx
+      POSTGRES_PASSWORD: reconx
+    ports:
+      - "5432:5432"
+    volumes:
+      - reconx_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reconx -d reconx"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  reconx_postgres_data:

@@ -1,0 +1,40 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Node / Vue / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+
+# Go build artifacts and coverage
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/backend/api
+/backend/coverage.out
+/backend/tmp/
+/backend/vendor/
+
+# Local databases and logs
+*.log
+*.pid
+.postgres-data/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
