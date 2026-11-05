@@ -24,7 +24,7 @@ func main() {
 		slog.Error("development seed password and reset are restricted to development")
 		os.Exit(1)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	db, err := database.Open(ctx, cfg.DatabaseURL)
 	if err != nil {

@@ -112,7 +112,7 @@ func (s Service) ListBatches(ctx context.Context, userID string, operator bool, 
 	}
 	base := ` FROM reconciliation_batches b JOIN bank_accounts a ON a.id=b.account_id JOIN users u ON u.id=b.created_by
 		WHERE ($1='' OR b.batch_no ILIKE '%'||$1||'%' OR a.account_code ILIKE '%'||$1||'%')
-		AND ($2='' OR b.state=$2) AND ($3='' OR b.account_id::text=$3) AND ($4::boolean=false OR b.created_by::text=$5)
+		AND ($2='' OR b.state=$2 OR ($2='ACTIVE' AND b.state NOT IN ('CLOSED','CANCELLED')) OR ($2='COMPLETED' AND b.state='CLOSED')) AND ($3='' OR b.account_id::text=$3) AND ($4::boolean=false OR b.created_by::text=$5)
 		AND ($6='' OR b.period_from >= $6::date) AND ($7='' OR b.period_to <= $7::date)`
 	var total int
 	if err := s.DB.QueryRowContext(ctx, `SELECT count(*)`+base, q, state, accountID, operator, userID, periodFrom, periodTo).Scan(&total); err != nil {
@@ -274,6 +274,23 @@ func CheckOwnership(ctx context.Context, db *sql.DB, batchID, userID string, ope
 		return err
 	}
 	if ownerID != userID {
+		return ErrForbiddenScope
+	}
+	return nil
+}
+
+// CheckBatchReadAccess permits an assignee to view batch metadata without granting
+// access to the owner's unrelated transactions, imports, or workflow actions.
+func CheckBatchReadAccess(ctx context.Context, db *sql.DB, batchID, userID string, operator bool) error {
+	if !operator {
+		return nil
+	}
+	var allowed bool
+	err := db.QueryRowContext(ctx, `SELECT (b.created_by::text=$2 OR EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.batch_id=b.id AND e.assigned_to::text=$2 AND e.state<>'ARCHIVED')) FROM reconciliation_batches b WHERE b.id::text=$1`, batchID, userID).Scan(&allowed)
+	if err != nil {
+		return err
+	}
+	if !allowed {
 		return ErrForbiddenScope
 	}
 	return nil

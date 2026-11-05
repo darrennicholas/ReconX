@@ -19,6 +19,7 @@ backend/internal/modules/         Modul domain dan service
 backend/internal/platform/        Database, HTTP, migration, audit
 backend/internal/platform/migrate/001_initial.sql
 backend/internal/platform/migrate/002_exception_candidates.sql
+backend/internal/platform/migrate/003_ambiguous_references.sql
 backend/examples/                 Fixture CSV sintetis
 frontend/src/App.vue              Root Vue Router
 frontend/src/Workspace.vue        UI ReconX dan alur API
@@ -50,8 +51,16 @@ Admin mengelola akses dan konfigurasi. Operator menjalankan rekonsiliasi. Checke
 | Operator | `operator@reconx.local` | `developer` | Menjalankan import dan rekonsiliasi. |
 | Checker | `checker@reconx.local` | `developer` | Memeriksa dan menyetujui pengajuan. |
 | Auditor | `auditor@reconx.local` | `developer` | Meninjau laporan dan audit. |
+| Operator cabang | `operator.cabang@reconx.local` | `developer` | Memproses batch milik operator cabang. |
+| Checker cadangan | `checker.cadangan@reconx.local` | `developer` | Memeriksa antrean persetujuan. |
+| Auditor internal | `auditor.internal@reconx.local` | `developer` | Meninjau laporan dan audit. |
 
-Seeder development membuat keempat akun ini serta rekening dan batch contoh dengan transaksi, matching, exception, dan pengajuan. Seeder aman dijalankan kembali dan tidak mengubah password akun yang sudah ada. Password `developer` hanya untuk pengembangan lokal.
+Seeder development membuat akun-akun tersebut serta rekening dan batch contoh untuk status draft, siap matching, investigasi exception, menunggu approval, dan selesai. Batch contoh dimiliki dua akun Operator agar cakupan akses dapat dicoba. Data juga mengisi transaksi, hasil matching, antrean approval, laporan, audit, dan notifikasi sesuai role. Seeder aman dijalankan kembali dan tidak mengubah password akun yang sudah ada. Password `developer` hanya untuk pengembangan lokal. Untuk membuat batch baru pada rekening contoh, pilih periode yang tidak bertindih dengan batch yang sudah ada.
+
+Contoh tambahan mencakup perbedaan arah, referensi ganda (`AMBIGUOUS_MATCH`), exception yang ditugaskan ke operator lain, manual match yang disetujui dan ditolak, batch yang disetujui, ditolak dan dibatalkan, serta impor tidak valid. Data dibuat melalui layanan aplikasi agar hasil matching, approval, notifikasi dan audit tetap terhubung. Status sementara seperti `PROCESSING` tidak dibuat sebagai batch yang berhenti di tengah proses.
+
+Untuk mencoba referensi ganda, gunakan `frontend/public/contoh/internal-ambiguous.csv` dan `frontend/public/contoh/bank-ambiguous.csv`: buat batch dengan periode yang mencakup tanggal di file, impor masing-masing sesuai sumber, lalu jalankan matching. File dapat dibuka dan disunting di Excel, kemudian disimpan sebagai CSV UTF-8. Referensi ganda sekarang diterima saat impor dan ditandai `AMBIGUOUS_MATCH` saat matching, perubahan dari aturan reference unik di FSD. File `.xlsx` belum didukung langsung.
+
 ## Alur bisnis (FSD §4)
 
 1. Operator membuat batch untuk rekening dan periode tertentu. Backend menolak periode yang bertumpang-tindih pada rekening yang sama.
@@ -69,14 +78,18 @@ State utama batch: `DRAFT → READY → PROCESSING → REVIEW → PENDING_APPROV
 - Login/logout, session server, profil sesi, bootstrap Admin, manajemen user dan role tetap.
 - Dashboard dengan filter periode/rekening, tren matching, distribusi status batch, dan top exception; rekening sumber serta daftar/detail batch.
 - Upload CSV, validasi atomik, laporan error CSV, penyimpanan file private.
-- Daftar transaksi dengan pencarian/filter/pengurutan/paginasi lokal, detail raw row, exact matching, hasil run, dan exception workbench.
+- Daftar transaksi dengan pencarian/filter/pengurutan dan paginasi, detail transaksi, exact matching, hasil run, dan exception workbench.
 - Assignment, catatan, lampiran evidence private (PDF/PNG/JPEG/TXT maks. 5 MB), proposal manual match, maker-checker approval, submit/close batch.
 - CSV laporan, audit log, notifikasi, dan pengaturan yang diizinkan FSD.
+- Reports menyediakan pilihan ekspor ringkasan batch, transaksi, dan riwayat exception (termasuk catatan dan keputusan manual match) berdasarkan filter dan hak akses pengguna yang aktif.
+- Detail batch, exception, transaksi, approval, dan audit dapat dibuka dari tombol aksi dalam modal. Detail audit menampilkan aktivitas dan ringkasan perubahan tanpa menampilkan kode teknis kepada pengguna.
 - RBAC server-side: Admin, Operator, Checker, Auditor; Operator dibatasi ke batch miliknya; Checker tidak dapat menyetujui request yang dibuatnya sendiri.
 
 ## Database
 
 Migration ada di source code, tetapi **API tidak menjalankannya saat startup**. Database lokal tidak berubah sampai Anda menjalankan `cmd/migrate`. Migration membuat schema MVP dan data referensi role/permission/settings; sedangkan `cmd/seed` membuat Admin awal dan, dalam development, akun role serta data contoh yang saling terhubung.
+
+File migration berada di `backend/internal/platform/migrate`; riwayat penerapannya disimpan dalam tabel PostgreSQL `public.schema_migrations`.
 
 Gunakan database PostgreSQL kosong yang memang disiapkan untuk ReconX. Perintah migration akan membuat tabel di database pada `DATABASE_URL`.
 
@@ -136,6 +149,20 @@ Buka <http://localhost:5173>. API berjalan di <http://localhost:8080>. Vite mene
 
 Untuk Docker PostgreSQL, `.env.example` memakai user/database `reconx`; jalankan `docker compose up -d postgres` hanya jika port 5432 tidak sedang dipakai PostgreSQL Laragon. Jangan jalankan dua server PostgreSQL pada port yang sama.
 
+### Penugasan exception dan pengujian RBAC
+
+Operator pemilik batch dapat menugaskan exception kepada operator aktif lain. Operator yang ditugaskan dapat memeriksa exception, melihat ringkasan batch terkait dan transaksi yang berkaitan dengan exception tersebut, serta melakukan tindakan investigasi sesuai statusnya. Operator lain tidak dapat mengubah exception tersebut. Penugasan baru dan proposal manual dibatasi ketika persetujuan masih menunggu; catatan dan bukti tetap dapat ditambahkan tanpa mengubah status persetujuan.
+
+Jalankan tes backend dengan `go test ./...` dari direktori `backend`. Tes integrasi RBAC memerlukan database PostgreSQL khusus tes yang nama databasenya berakhir `_test`; tes membuat dan menghapus schema terisolasi di database tersebut:
+
+```powershell
+cd C:\ReconX\backend
+$env:RECONX_RBAC_TEST_DATABASE_URL = 'postgres://postgres@127.0.0.1:5432/reconx_rbac_test?sslmode=disable'
+go test ./internal/platform/httpserver -run TestRBACAndAssignedExceptionIntegration -count=1 -v
+```
+
+Sesuaikan URL dengan PostgreSQL lokal dan buat database tes terlebih dahulu. Tanpa variabel tersebut, tes integrasi dilewati.
+
 ## Endpoint API
 
 Prefix: `/api/v1`
@@ -161,16 +188,17 @@ reference_id,date,direction,amount,currency
 TRX001,2026-11-03,CREDIT,500000,IDR
 ```
 
-Unggah satu file pada source `INTERNAL`, lalu file satu lagi pada source `BANK` untuk batch yang sama. Reference dalam setiap file harus unik; tanggal mesti berada dalam periode batch; currency MVP adalah IDR.
+Unggah satu file pada source `INTERNAL`, lalu file satu lagi pada source `BANK` untuk batch yang sama. Reference wajib diisi; reference ganda dapat menghasilkan exception ambiguous match. Tanggal mesti berada dalam periode batch; currency MVP adalah IDR.
 
 ## Validasi build
 
 ```powershell
 cd C:\ReconX\backend
+go test ./...
 go build ./...
 
 cd C:\ReconX\frontend
 npm run build
 ```
 
-Build memeriksa kompilasi dan bundling aplikasi.
+Tes integrasi yang memerlukan PostgreSQL dijalankan dengan variabel khusus sebagaimana dijelaskan pada bagian pengujian RBAC. Build memeriksa kompilasi dan bundling aplikasi.

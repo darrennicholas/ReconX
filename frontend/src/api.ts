@@ -22,7 +22,7 @@ function cookie(name: string): string {
   return item ? decodeURIComponent(item.slice(prefix.length)) : ''
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit & { idempotent?: boolean } = {}): Promise<{ data: T; response: Response }> {
+export async function apiRequest<T>(path: string, options: RequestInit & { idempotent?: boolean } = {}): Promise<{ data: T; response: Response; meta?: Record<string, unknown> }> {
   const headers = new Headers(options.headers)
   const method = (options.method ?? 'GET').toUpperCase()
   const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(method)
@@ -34,17 +34,18 @@ export async function apiRequest<T>(path: string, options: RequestInit & { idemp
     if (options.idempotent) headers.set('Idempotency-Key', crypto.randomUUID())
   }
   headers.set('X-Request-ID', crypto.randomUUID())
-  if (mutating) pendingActions.value++
+  const showLoading = mutating && path !== '/api/v1/auth/logout'
+  if (showLoading) pendingActions.value++
   try {
     const response = await fetch(path, { ...options, headers, credentials: 'include' })
     const envelope = await response.json().catch(() => ({})) as ApiEnvelope<T>
     if (!response.ok || envelope.success === false) {
       throw new ApiError(envelope.error?.message ?? `Request gagal (${response.status})`, response.status, envelope.data)
     }
-    return { data: envelope.data as T, response }
+    return { data: envelope.data as T, response, meta: envelope.meta }
   } finally {
     if (mutating) {
-      pendingActions.value--
+      if (showLoading) pendingActions.value--
       if (!path.startsWith('/api/v1/notifications/') && path !== '/api/v1/auth/login' && path !== '/api/v1/auth/logout') {
         window.dispatchEvent(new Event('reconx:notifications-changed'))
       }

@@ -1,0 +1,3 @@
+reference_id,date,direction,amount,currency
+AMB-001,2026-11-01,CREDIT,100000,IDR
+AMB-002,2026-11-01,DEBIT,150000,IDR

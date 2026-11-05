@@ -90,6 +90,8 @@ func registerFeatureRoutes(mux *http.ServeMux, db *sql.DB, logger *slog.Logger) 
 	mux.Handle("GET /api/v1/transactions", app.protect(identity.PermissionBatchesRead, false, app.listTransactions))
 	mux.Handle("GET /api/v1/transactions/{id}", app.protect(identity.PermissionBatchesRead, false, app.getTransaction))
 	mux.Handle("GET /api/v1/exceptions", app.protect(identity.PermissionBatchesRead, false, app.listExceptions))
+	mux.Handle("GET /api/v1/exceptions/summary", app.protect(identity.PermissionBatchesRead, false, app.exceptionSummary))
+	mux.Handle("GET /api/v1/exception-operators", app.protect(identity.PermissionExceptionsInvestigate, false, app.listExceptionOperators))
 	mux.Handle("GET /api/v1/exceptions/{id}", app.protect(identity.PermissionBatchesRead, false, app.getException))
 	mux.Handle("POST /api/v1/exceptions/{id}/actions", app.protect(identity.PermissionExceptionsInvestigate, true, app.addExceptionAction))
 	mux.Handle("POST /api/v1/exceptions/{id}/evidence", app.protectIdempotent(identity.PermissionExceptionsInvestigate, app.uploadExceptionEvidence))
@@ -390,12 +392,13 @@ func (a *api) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) listUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := a.identity.ListUsers(r.Context())
+	page, pageSize := pageArgs(r)
+	users, total, err := a.identity.ListUsersPage(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("role"), r.URL.Query().Get("status"), page, pageSize)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusOK, users, map[string]int{"count": len(users)})
+	httpx.JSON(w, r, http.StatusOK, users, paginationMeta(page, pageSize, total))
 }
 
 func (a *api) getUser(w http.ResponseWriter, r *http.Request) {
@@ -475,12 +478,13 @@ func (a *api) listAccounts(w http.ResponseWriter, r *http.Request) {
 		parsed := value == "true"
 		active = &parsed
 	}
-	accounts, err := a.banking.ListAccounts(r.Context(), r.URL.Query().Get("q"), active)
+	page, pageSize := pageArgs(r)
+	accounts, total, err := a.banking.ListAccountsPage(r.Context(), r.URL.Query().Get("q"), active, page, pageSize)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusOK, accounts, map[string]int{"count": len(accounts)})
+	httpx.JSON(w, r, http.StatusOK, accounts, paginationMeta(page, pageSize, total))
 }
 
 func (a *api) getAccount(w http.ResponseWriter, r *http.Request) {
@@ -558,6 +562,10 @@ func (a *api) accountError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func (a *api) notFoundOrError(w http.ResponseWriter, r *http.Request, err error, message string) {
+	if errors.Is(err, reconciliation.ErrForbiddenScope) {
+		httpx.Error(w, r, http.StatusForbidden, "forbidden", "Data berada di luar cakupan akses Anda.")
+		return
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		httpx.Error(w, r, http.StatusNotFound, "not_found", message)
 		return

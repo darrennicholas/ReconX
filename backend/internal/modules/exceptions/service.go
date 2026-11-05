@@ -38,6 +38,7 @@ type ExceptionFilter struct {
 	AssigneeID string
 	From       string
 	To         string
+	AgeBucket  string
 	OperatorID string
 	Operator   bool
 	Page       int
@@ -65,9 +66,11 @@ type EvidenceFile struct {
 
 type ExceptionDetail struct {
 	reconciliation.ExceptionView
-	Internal *reconciliation.TransactionView `json:"internal,omitempty"`
-	Bank     *reconciliation.TransactionView `json:"bank,omitempty"`
-	Actions  []ExceptionAction               `json:"actions"`
+	Internal        *reconciliation.TransactionView  `json:"internal,omitempty"`
+	Bank            *reconciliation.TransactionView  `json:"bank,omitempty"`
+	Candidates      []reconciliation.TransactionView `json:"candidates,omitempty"`
+	Actions         []ExceptionAction                `json:"actions"`
+	CanAssignOthers bool                             `json:"can_assign_others"`
 }
 
 type ApprovalView struct {
@@ -88,15 +91,35 @@ type ApprovalView struct {
 	DecidedAt     *time.Time                      `json:"decided_at,omitempty"`
 	Internal      *reconciliation.TransactionView `json:"internal,omitempty"`
 	Bank          *reconciliation.TransactionView `json:"bank,omitempty"`
+	InternalFile  string                          `json:"internal_file,omitempty"`
+	BankFile      string                          `json:"bank_file,omitempty"`
+	RuleVersion   string                          `json:"rule_version,omitempty"`
 }
 
 type ActionInput struct {
-	Type string `json:"type"`
-	Note string `json:"note"`
+	Type       string `json:"type"`
+	Note       string `json:"note"`
+	AssigneeID string `json:"assignee_id"`
 }
 
 type ProposalInput struct {
 	Reason string `json:"reason"`
+}
+
+func checkInvestigationAccess(actorID, makerID, assignedTo, exceptionState, batchState, action string) error {
+	if actorID == "" || (actorID != makerID && actorID != assignedTo) {
+		return reconciliation.ErrForbiddenScope
+	}
+	if batchState != "REVIEW" || exceptionState == "RESOLVED" || exceptionState == "ARCHIVED" {
+		return ErrApprovalConflict
+	}
+	if action == "ASSIGN" && exceptionState != "OPEN" && exceptionState != "INVESTIGATING" {
+		return ErrApprovalConflict
+	}
+	if action != "ASSIGN" && exceptionState != "OPEN" && exceptionState != "INVESTIGATING" && exceptionState != "PENDING_ACTION_APPROVAL" {
+		return ErrApprovalConflict
+	}
+	return nil
 }
 
 func (s Service) List(ctx context.Context, filter ExceptionFilter) ([]reconciliation.ExceptionView, int, error) {
@@ -113,15 +136,16 @@ func (s Service) List(ctx context.Context, filter ExceptionFilter) ([]reconcilia
 		WHERE ($1='' OR e.type=$1) AND ($2='' OR e.state=$2) AND ($3='' OR e.batch_id::text=$3) AND ($4='' OR b.account_id::text=$4)
 		AND ($5='' OR COALESCE(e.assigned_to::text,'')=$5) AND ($6='' OR e.created_at::date >= $6::date) AND ($7='' OR e.created_at::date <= $7::date)
 		AND ($8='' OR e.id::text=$8 OR COALESCE(i.reference_canonical,k.reference_canonical,'') ILIKE '%'||upper($8)||'%' OR b.batch_no ILIKE '%'||$8||'%')
-		AND ($9::boolean=false OR b.created_by::text=$10 OR e.assigned_to::text=$10)`
-	args := []any{filter.Type, filter.State, filter.BatchID, filter.AccountID, filter.AssigneeID, filter.From, filter.To, filter.Query, filter.Operator, filter.OperatorID}
+		AND ($9::boolean=false OR b.created_by::text=$10 OR e.assigned_to::text=$10)
+		AND ($11='' OR ($11='UNDER_24H' AND e.created_at >= now()-interval '24 hours') OR ($11='24_72H' AND e.created_at < now()-interval '24 hours' AND e.created_at >= now()-interval '72 hours') OR ($11='OVER_72H' AND e.created_at < now()-interval '72 hours'))`
+	args := []any{filter.Type, filter.State, filter.BatchID, filter.AccountID, filter.AssigneeID, filter.From, filter.To, filter.Query, filter.Operator, filter.OperatorID, filter.AgeBucket}
 	var total int
 	if err := s.DB.QueryRowContext(ctx, `SELECT count(*)`+base, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	query := `SELECT e.id::text,e.batch_id::text,b.batch_no,e.run_id::text,e.type,e.state,COALESCE(e.internal_transaction_id::text,''),COALESCE(e.bank_transaction_id::text,''),COALESCE(i.reference_raw,k.reference_raw,''),i.amount_rupiah,k.amount_rupiah,
 		CASE WHEN i.amount_rupiah IS NOT NULL AND k.amount_rupiah IS NOT NULL THEN abs(i.amount_rupiah-k.amount_rupiah) ELSE COALESCE(i.amount_rupiah,k.amount_rupiah) END,
-		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),e.candidate_transaction_ids,COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at` + base + ` ORDER BY e.created_at DESC LIMIT $11 OFFSET $12`
+		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),e.candidate_transaction_ids,COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at` + base + ` ORDER BY e.created_at DESC LIMIT $12 OFFSET $13`
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -144,22 +168,60 @@ func (s Service) List(ctx context.Context, filter ExceptionFilter) ([]reconcilia
 	return items, total, rows.Err()
 }
 
+// Summary returns counts for active exceptions using the same scope and filters as List.
+func (s Service) Summary(ctx context.Context, filter ExceptionFilter) ([]reconciliation.DashboardCount, error) {
+	base := ` FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id
+		LEFT JOIN transactions i ON i.id=e.internal_transaction_id LEFT JOIN transactions k ON k.id=e.bank_transaction_id
+		WHERE e.state NOT IN ('RESOLVED','ARCHIVED') AND ($1='' OR e.type=$1) AND ($2='' OR e.state=$2)
+		AND ($3='' OR e.batch_id::text=$3) AND ($4='' OR b.account_id::text=$4)
+		AND ($5='' OR COALESCE(e.assigned_to::text,'')=$5) AND ($6='' OR e.created_at::date >= $6::date) AND ($7='' OR e.created_at::date <= $7::date)
+		AND ($8='' OR e.id::text=$8 OR COALESCE(i.reference_canonical,k.reference_canonical,'') ILIKE '%'||upper($8)||'%' OR b.batch_no ILIKE '%'||$8||'%')
+		AND ($9::boolean=false OR b.created_by::text=$10 OR e.assigned_to::text=$10)
+		AND ($11='' OR ($11='UNDER_24H' AND e.created_at >= now()-interval '24 hours') OR ($11='24_72H' AND e.created_at < now()-interval '24 hours' AND e.created_at >= now()-interval '72 hours') OR ($11='OVER_72H' AND e.created_at < now()-interval '72 hours'))`
+	rows, err := s.DB.QueryContext(ctx, `SELECT e.type,count(*)`+base+` GROUP BY e.type ORDER BY e.type`, filter.Type, filter.State, filter.BatchID, filter.AccountID, filter.AssigneeID, filter.From, filter.To, filter.Query, filter.Operator, filter.OperatorID, filter.AgeBucket)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]reconciliation.DashboardCount, 0)
+	for rows.Next() {
+		var item reconciliation.DashboardCount
+		if err := rows.Scan(&item.Name, &item.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s Service) Detail(ctx context.Context, exceptionID, operatorID string, operator bool) (ExceptionDetail, error) {
 	var detail ExceptionDetail
+	var ownerID string
 	var candidateIDs []byte
 	err := s.DB.QueryRowContext(ctx, `SELECT e.id::text,e.batch_id::text,b.batch_no,e.run_id::text,e.type,e.state,COALESCE(e.internal_transaction_id::text,''),COALESCE(e.bank_transaction_id::text,''),COALESCE(i.reference_raw,k.reference_raw,''),i.amount_rupiah,k.amount_rupiah,
 		CASE WHEN i.amount_rupiah IS NOT NULL AND k.amount_rupiah IS NOT NULL THEN abs(i.amount_rupiah-k.amount_rupiah) ELSE COALESCE(i.amount_rupiah,k.amount_rupiah) END,
-		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),e.candidate_transaction_ids,COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at
+		i.transaction_date,k.transaction_date,COALESCE(i.direction,''),COALESCE(k.direction,''),e.candidate_transaction_ids,COALESCE(e.assigned_to::text,''),COALESCE(u.full_name,''),e.created_at,b.created_by::text
 		FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id LEFT JOIN users u ON u.id=e.assigned_to
 		LEFT JOIN transactions i ON i.id=e.internal_transaction_id LEFT JOIN transactions k ON k.id=e.bank_transaction_id
 		WHERE e.id=$1 AND ($2::boolean=false OR b.created_by::text=$3 OR e.assigned_to::text=$3)`, exceptionID, operator, operatorID).
 		Scan(&detail.ID, &detail.BatchID, &detail.BatchNo, &detail.RunID, &detail.Type, &detail.State, &detail.InternalTransactionID, &detail.BankTransactionID, &detail.ReferenceID,
-			&detail.InternalAmount, &detail.BankAmount, &detail.Difference, &detail.InternalDate, &detail.BankDate, &detail.InternalDirection, &detail.BankDirection, &candidateIDs, &detail.AssignedTo, &detail.AssigneeName, &detail.CreatedAt)
+			&detail.InternalAmount, &detail.BankAmount, &detail.Difference, &detail.InternalDate, &detail.BankDate, &detail.InternalDirection, &detail.BankDirection, &candidateIDs, &detail.AssignedTo, &detail.AssigneeName, &detail.CreatedAt, &ownerID)
 	if err != nil {
 		return ExceptionDetail{}, err
 	}
+	detail.CanAssignOthers = operator && ownerID == operatorID
 	if err := json.Unmarshal(candidateIDs, &detail.CandidateTransactionIDs); err != nil {
 		return ExceptionDetail{}, err
+	}
+	for _, id := range detail.CandidateTransactionIDs {
+		item, err := transactionByID(ctx, s.DB, id)
+		if err != nil {
+			return ExceptionDetail{}, err
+		}
+		if item.BatchID != detail.BatchID {
+			return ExceptionDetail{}, ErrApprovalConflict
+		}
+		detail.Candidates = append(detail.Candidates, item)
 	}
 	if detail.InternalTransactionID != "" {
 		item, err := transactionByID(ctx, s.DB, detail.InternalTransactionID)
@@ -213,18 +275,37 @@ func (s Service) AddAction(ctx context.Context, exceptionID string, input Action
 		return ExceptionAction{}, err
 	}
 	defer tx.Rollback()
-	var batchID, state, assignedTo, makerID string
-	err = tx.QueryRowContext(ctx, `SELECT e.batch_id::text,e.state,COALESCE(e.assigned_to::text,''),b.created_by::text FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id WHERE e.id=$1 FOR UPDATE OF e`, exceptionID).
-		Scan(&batchID, &state, &assignedTo, &makerID)
+	var batchID, state, assignedTo, makerID, batchState string
+	err = tx.QueryRowContext(ctx, `SELECT e.batch_id::text,e.state,COALESCE(e.assigned_to::text,''),b.created_by::text,b.state FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id WHERE e.id=$1 FOR UPDATE OF e,b`, exceptionID).
+		Scan(&batchID, &state, &assignedTo, &makerID, &batchState)
 	if err != nil {
 		return ExceptionAction{}, err
 	}
-	if state == "RESOLVED" || state == "ARCHIVED" || (assignedTo != "" && assignedTo != actorID && makerID != actorID) {
-		return ExceptionAction{}, ErrInvalidAction
+	if err := checkInvestigationAccess(actorID, makerID, assignedTo, state, batchState, input.Type); err != nil {
+		return ExceptionAction{}, err
 	}
 	if input.Type == "ASSIGN" {
-		if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_exceptions SET assigned_to=$2,state='INVESTIGATING' WHERE id=$1`, exceptionID, actorID); err != nil {
+		targetID := strings.TrimSpace(input.AssigneeID)
+		if targetID == "" {
+			targetID = actorID
+		}
+		if targetID != actorID && actorID != makerID {
+			return ExceptionAction{}, reconciliation.ErrForbiddenScope
+		}
+		var active bool
+		if err := tx.QueryRowContext(ctx, `SELECT u.active FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id::text=$1 AND r.code='OPERATOR' FOR SHARE OF u`, targetID).Scan(&active); errors.Is(err, sql.ErrNoRows) || (err == nil && !active) {
+			return ExceptionAction{}, ErrInvalidAction
+		} else if err != nil {
 			return ExceptionAction{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_exceptions SET assigned_to=$2,state='INVESTIGATING' WHERE id=$1`, exceptionID, targetID); err != nil {
+			return ExceptionAction{}, err
+		}
+		input.AssigneeID = targetID
+		if targetID != actorID {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO notifications(user_id,type,title,body,target_entity,target_entity_id) VALUES ($1,'EXCEPTION_ASSIGNED','Exception ditugaskan','Anda mendapat tugas pemeriksaan exception.','exception',$2)`, targetID, exceptionID); err != nil {
+				return ExceptionAction{}, err
+			}
 		}
 	} else if state == "OPEN" {
 		if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_exceptions SET state='INVESTIGATING' WHERE id=$1`, exceptionID); err != nil {
@@ -238,7 +319,13 @@ func (s Service) AddAction(ctx context.Context, exceptionID string, input Action
 	if err != nil {
 		return ExceptionAction{}, err
 	}
-	if err := audit.Append(ctx, tx, actorID, "EXCEPTION_"+input.Type, "exception", exceptionID, nil, map[string]string{"note": input.Note}, requestID, ip); err != nil {
+	afterAssigned, afterState := assignedTo, state
+	if input.Type == "ASSIGN" {
+		afterAssigned, afterState = input.AssigneeID, "INVESTIGATING"
+	} else if state == "OPEN" {
+		afterState = "INVESTIGATING"
+	}
+	if err := audit.Append(ctx, tx, actorID, "EXCEPTION_"+input.Type, "exception", exceptionID, map[string]string{"state": state, "assigned_to": assignedTo}, map[string]string{"state": afterState, "note": input.Note, "assigned_to": afterAssigned}, requestID, ip); err != nil {
 		return ExceptionAction{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_batches SET row_version=row_version+1,updated_at=now() WHERE id=$1`, batchID); err != nil {
@@ -271,13 +358,13 @@ func (s Service) AddEvidence(ctx context.Context, exceptionID, filename, content
 		return ExceptionAction{}, err
 	}
 	defer tx.Rollback()
-	var batchID, state, assignedTo, makerID string
-	if err := tx.QueryRowContext(ctx, `SELECT e.batch_id::text,e.state,COALESCE(e.assigned_to::text,''),b.created_by::text FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id WHERE e.id=$1 FOR UPDATE OF e`, exceptionID).
-		Scan(&batchID, &state, &assignedTo, &makerID); err != nil {
+	var batchID, state, assignedTo, makerID, batchState string
+	if err := tx.QueryRowContext(ctx, `SELECT e.batch_id::text,e.state,COALESCE(e.assigned_to::text,''),b.created_by::text,b.state FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id WHERE e.id=$1 FOR UPDATE OF e,b`, exceptionID).
+		Scan(&batchID, &state, &assignedTo, &makerID, &batchState); err != nil {
 		return ExceptionAction{}, err
 	}
-	if state == "RESOLVED" || state == "ARCHIVED" || (assignedTo != "" && assignedTo != actorID && makerID != actorID) {
-		return ExceptionAction{}, ErrInvalidAction
+	if err := checkInvestigationAccess(actorID, makerID, assignedTo, state, batchState, "EVIDENCE"); err != nil {
+		return ExceptionAction{}, err
 	}
 	if state == "OPEN" {
 		if _, err := tx.ExecContext(ctx, `UPDATE reconciliation_exceptions SET state='INVESTIGATING' WHERE id=$1`, exceptionID); err != nil {
@@ -358,17 +445,20 @@ func (s Service) ProposeManualMatch(ctx context.Context, exceptionID, reason, ma
 		return ApprovalView{}, err
 	}
 	defer tx.Rollback()
-	var batchID, runID, state, exceptionType string
+	var batchID, runID, state, exceptionType, batchState string
 	var currentVersion int64
 	var createdBy, assignedTo string
 	var internalID, bankID string
-	err = tx.QueryRowContext(ctx, `SELECT e.batch_id::text,e.run_id::text,e.state,e.type,COALESCE(e.internal_transaction_id::text,''),COALESCE(e.bank_transaction_id::text,''),b.source_version,b.created_by::text,COALESCE(e.assigned_to::text,'')
+	err = tx.QueryRowContext(ctx, `SELECT e.batch_id::text,e.run_id::text,e.state,e.type,COALESCE(e.internal_transaction_id::text,''),COALESCE(e.bank_transaction_id::text,''),b.source_version,b.created_by::text,COALESCE(e.assigned_to::text,''),b.state
 		FROM reconciliation_exceptions e JOIN reconciliation_batches b ON b.id=e.batch_id WHERE e.id=$1 FOR UPDATE OF e,b`, exceptionID).
-		Scan(&batchID, &runID, &state, &exceptionType, &internalID, &bankID, &currentVersion, &createdBy, &assignedTo)
+		Scan(&batchID, &runID, &state, &exceptionType, &internalID, &bankID, &currentVersion, &createdBy, &assignedTo, &batchState)
 	if err != nil {
 		return ApprovalView{}, err
 	}
-	if exceptionType != "DATE_VARIANCE" || (state != "OPEN" && state != "INVESTIGATING") || internalID == "" || bankID == "" || (createdBy != makerID && assignedTo != makerID) {
+	if err := checkInvestigationAccess(makerID, createdBy, assignedTo, state, batchState, "PROPOSE"); err != nil {
+		return ApprovalView{}, err
+	}
+	if exceptionType != "DATE_VARIANCE" || (state != "OPEN" && state != "INVESTIGATING") || internalID == "" || bankID == "" {
 		return ApprovalView{}, ErrNotEligible
 	}
 	var internal reconciliation.TransactionView
@@ -436,12 +526,27 @@ func scanTransaction(row *sql.Row, item *reconciliation.TransactionView) error {
 }
 
 func (s Service) ListApprovals(ctx context.Context, state, kind string) ([]ApprovalView, error) {
+	items, _, err := s.ListApprovalsPage(ctx, state, kind, "", 1, 100)
+	return items, err
+}
+
+func (s Service) ListApprovalsPage(ctx context.Context, state, kind, query string, page, pageSize int) ([]ApprovalView, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	var total int
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM approval_requests a JOIN reconciliation_batches b ON b.id=a.batch_id JOIN users m ON m.id=a.maker_id WHERE ($1='' OR a.state=$1 OR ($1='HISTORY' AND a.state<>'PENDING')) AND ($2='' OR a.kind=$2) AND ($3='' OR b.batch_no ILIKE '%'||$3||'%' OR m.full_name ILIKE '%'||$3||'%' OR a.id::text ILIKE '%'||$3||'%')`, state, kind, query).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT a.id::text,a.kind,a.batch_id::text,b.batch_no,COALESCE(a.exception_id::text,''),COALESCE(e.type,''),a.maker_id::text,m.full_name,COALESCE(a.checker_id::text,''),a.state,a.source_version,a.reason,a.decision_comment,a.created_at,a.decided_at,
 		COALESCE(a.match_proposal_payload->>'internal_transaction_id',''),COALESCE(a.match_proposal_payload->>'bank_transaction_id','')
 		FROM approval_requests a JOIN reconciliation_batches b ON b.id=a.batch_id JOIN users m ON m.id=a.maker_id LEFT JOIN reconciliation_exceptions e ON e.id=a.exception_id
-		WHERE ($1='' OR a.state=$1) AND ($2='' OR a.kind=$2) ORDER BY CASE WHEN a.state='PENDING' THEN 0 ELSE 1 END,a.created_at DESC`, state, kind)
+		WHERE ($1='' OR a.state=$1 OR ($1='HISTORY' AND a.state<>'PENDING')) AND ($2='' OR a.kind=$2) AND ($3='' OR b.batch_no ILIKE '%'||$3||'%' OR m.full_name ILIKE '%'||$3||'%' OR a.id::text ILIKE '%'||$3||'%') ORDER BY CASE WHEN a.state='PENDING' THEN 0 ELSE 1 END,a.created_at DESC LIMIT $4 OFFSET $5`, state, kind, query, pageSize, (page-1)*pageSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	items := make([]ApprovalView, 0)
@@ -449,25 +554,30 @@ func (s Service) ListApprovals(ctx context.Context, state, kind string) ([]Appro
 		var item ApprovalView
 		var internalID, bankID string
 		if err := rows.Scan(&item.ID, &item.Kind, &item.BatchID, &item.BatchNo, &item.ExceptionID, &item.ExceptionType, &item.MakerID, &item.MakerName, &item.CheckerID, &item.State, &item.SourceVersion, &item.Reason, &item.Comment, &item.CreatedAt, &item.DecidedAt, &internalID, &bankID); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if internalID != "" {
 			var itemTx reconciliation.TransactionView
 			if err := scanTransaction(s.DB.QueryRowContext(ctx, `SELECT id::text,batch_id::text,import_file_id::text,source_type,reference_raw,reference_canonical,transaction_date,direction,amount_rupiah,currency,source_version,raw_row FROM transactions WHERE id=$1`, internalID), &itemTx); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			item.Internal = &itemTx
 		}
 		if bankID != "" {
 			var itemTx reconciliation.TransactionView
 			if err := scanTransaction(s.DB.QueryRowContext(ctx, `SELECT id::text,batch_id::text,import_file_id::text,source_type,reference_raw,reference_canonical,transaction_date,direction,amount_rupiah,currency,source_version,raw_row FROM transactions WHERE id=$1`, bankID), &itemTx); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			item.Bank = &itemTx
 		}
+		if item.Kind == "MANUAL_MATCH" && item.Internal != nil && item.Bank != nil {
+			if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE((SELECT original_name FROM import_files WHERE id=$1),''), COALESCE((SELECT original_name FROM import_files WHERE id=$2),''), COALESCE((SELECT rule_version FROM reconciliation_runs WHERE id=a.run_id),'') FROM approval_requests a WHERE a.id=$3`, item.Internal.ImportID, item.Bank.ImportID, item.ID).Scan(&item.InternalFile, &item.BankFile, &item.RuleVersion); err != nil {
+				return nil, 0, err
+			}
+		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, total, rows.Err()
 }
 
 func (s Service) GetApproval(ctx context.Context, approvalID string) (ApprovalView, error) {

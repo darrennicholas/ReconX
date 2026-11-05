@@ -194,6 +194,34 @@ func (s Service) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
+func (s Service) ListUsersPage(ctx context.Context, query, role, state string, page, pageSize int) ([]User, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	base := ` FROM users u JOIN roles r ON r.id=u.role_id WHERE ($1='' OR u.full_name ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%') AND ($2='' OR r.code=$2) AND ($3='' OR ($3='ACTIVE' AND u.active) OR ($3='INACTIVE' AND NOT u.active))`
+	var total int
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*)`+base, strings.TrimSpace(query), strings.ToUpper(role), strings.ToUpper(state)).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT u.id::text,u.full_name,u.email,r.code,u.active,u.created_at`+base+` ORDER BY u.full_name,u.id LIMIT $4 OFFSET $5`, strings.TrimSpace(query), strings.ToUpper(role), strings.ToUpper(state), pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]User, 0)
+	for rows.Next() {
+		var item User
+		if err := rows.Scan(&item.ID, &item.FullName, &item.Email, &item.Role, &item.Active, &item.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
 func (s Service) CreateUser(ctx context.Context, fullName, email, password string, role Role, actorID, requestID, ip string) (User, error) {
 	fullName = strings.TrimSpace(fullName)
 	email = strings.ToLower(strings.TrimSpace(email))

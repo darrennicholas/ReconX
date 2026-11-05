@@ -67,7 +67,6 @@ func ParseImportCSV(data []byte, periodFrom, periodTo time.Time) (ParsedImport, 
 	}
 
 	result := ParsedImport{Transactions: make([]ImportedTransaction, 0)}
-	seen := make(map[string]int)
 	line := 1
 	for {
 		row, readErr := reader.Read()
@@ -100,14 +99,6 @@ func ParseImportCSV(data []byte, periodFrom, periodTo time.Time) (ParsedImport, 
 		if reference == "" {
 			result.Errors = append(result.Errors, ImportRowError{Line: line, Field: "reference_id", Message: "Reference cannot be empty"})
 			rowInvalid = true
-		}
-		if reference != "" {
-			if firstLine, exists := seen[canonical]; exists {
-				result.Errors = append(result.Errors, ImportRowError{Line: line, Field: "reference_id", Message: fmt.Sprintf("Duplicate reference (first seen on line %d)", firstLine)})
-				rowInvalid = true
-			} else {
-				seen[canonical] = line
-			}
 		}
 		if dateErr != nil || date.Format("2006-01-02") != value("date") {
 			result.Errors = append(result.Errors, ImportRowError{Line: line, Field: "date", Message: "Date must use YYYY-MM-DD"})

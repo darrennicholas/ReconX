@@ -61,9 +61,9 @@ func (s Service) ListTransactions(ctx context.Context, filter TransactionSearch)
 	base := ` FROM transactions t JOIN reconciliation_batches b ON b.id=t.batch_id
 		WHERE t.source_version=b.source_version AND ($1='' OR t.reference_canonical ILIKE '%'||upper($1)||'%' OR b.batch_no ILIKE '%'||$1||'%')
 		AND ($2='' OR t.batch_id::text=$2) AND ($3='' OR t.source_type=$3)
-		AND ($4::boolean=false OR b.created_by::text=$5)
+		AND ($4::boolean=false OR b.created_by::text=$5 OR EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.batch_id=b.id AND e.assigned_to::text=$5 AND e.state<>'ARCHIVED' AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id OR e.candidate_transaction_ids ? t.id::text)))
 		AND ($6='' OR CASE WHEN EXISTS(SELECT 1 FROM transaction_matches m WHERE m.active AND (m.internal_transaction_id=t.id OR m.bank_transaction_id=t.id)) THEN 'MATCHED'
-			WHEN EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.state NOT IN ('RESOLVED','ARCHIVED') AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id)) THEN 'EXCEPTION' ELSE 'UNMATCHED' END=$6)`
+			WHEN EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.state NOT IN ('RESOLVED','ARCHIVED') AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id OR e.candidate_transaction_ids ? t.id::text)) THEN 'EXCEPTION' ELSE 'UNMATCHED' END=$6)`
 	args := []any{filter.Query, filter.BatchID, filter.Source, filter.Operator, filter.OperatorID, filter.Status}
 	var total int
 	if err := s.DB.QueryRowContext(ctx, `SELECT count(*)`+base, args...).Scan(&total); err != nil {
@@ -71,7 +71,7 @@ func (s Service) ListTransactions(ctx context.Context, filter TransactionSearch)
 	}
 	query := `SELECT t.id::text,t.batch_id::text,t.import_file_id::text,t.source_type,t.reference_raw,t.reference_canonical,t.transaction_date,t.direction,t.amount_rupiah,t.currency,t.source_version,t.raw_row,
 		CASE WHEN EXISTS(SELECT 1 FROM transaction_matches m WHERE m.active AND (m.internal_transaction_id=t.id OR m.bank_transaction_id=t.id)) THEN 'MATCHED'
-		WHEN EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.state NOT IN ('RESOLVED','ARCHIVED') AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id)) THEN 'EXCEPTION' ELSE 'UNMATCHED' END` + base + ` ORDER BY t.transaction_date DESC,t.reference_canonical,t.id LIMIT $7 OFFSET $8`
+		WHEN EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.state NOT IN ('RESOLVED','ARCHIVED') AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id OR e.candidate_transaction_ids ? t.id::text)) THEN 'EXCEPTION' ELSE 'UNMATCHED' END` + base + ` ORDER BY t.transaction_date DESC,t.reference_canonical,t.id LIMIT $7 OFFSET $8`
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -90,10 +90,10 @@ func (s Service) ListTransactions(ctx context.Context, filter TransactionSearch)
 }
 
 func (s Service) GetTransaction(ctx context.Context, id string, operatorID string, operator bool) (TransactionResult, error) {
-	filter := ` WHERE t.id=$1 AND t.source_version=b.source_version AND ($2::boolean=false OR b.created_by::text=$3)`
+	filter := ` WHERE t.id=$1 AND t.source_version=b.source_version AND ($2::boolean=false OR b.created_by::text=$3 OR EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.batch_id=b.id AND e.assigned_to::text=$3 AND e.state<>'ARCHIVED' AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id OR e.candidate_transaction_ids ? t.id::text)))`
 	query := `SELECT t.id::text,t.batch_id::text,t.import_file_id::text,t.source_type,t.reference_raw,t.reference_canonical,t.transaction_date,t.direction,t.amount_rupiah,t.currency,t.source_version,t.raw_row,
 	CASE WHEN EXISTS(SELECT 1 FROM transaction_matches m WHERE m.active AND (m.internal_transaction_id=t.id OR m.bank_transaction_id=t.id)) THEN 'MATCHED'
-	WHEN EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.state NOT IN ('RESOLVED','ARCHIVED') AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id)) THEN 'EXCEPTION' ELSE 'UNMATCHED' END
+	WHEN EXISTS(SELECT 1 FROM reconciliation_exceptions e WHERE e.state NOT IN ('RESOLVED','ARCHIVED') AND (e.internal_transaction_id=t.id OR e.bank_transaction_id=t.id OR e.candidate_transaction_ids ? t.id::text)) THEN 'EXCEPTION' ELSE 'UNMATCHED' END
 	FROM transactions t JOIN reconciliation_batches b ON b.id=t.batch_id` + filter
 	var item TransactionResult
 	err := s.DB.QueryRowContext(ctx, query, id, operator, operatorID).Scan(&item.ID, &item.BatchID, &item.ImportID, &item.SourceType, &item.ReferenceID, &item.ReferenceCanonical, &item.Date, &item.Direction, &item.Amount, &item.Currency, &item.SourceVersion, &item.RawRow, &item.Status)
@@ -101,30 +101,45 @@ func (s Service) GetTransaction(ctx context.Context, id string, operatorID strin
 }
 
 func (s Service) ListMatches(ctx context.Context, batchID string, sourceVersion int64) ([]MatchView, error) {
+	items, _, err := s.ListMatchesPage(ctx, batchID, sourceVersion, "", "", 1, 100)
+	return items, err
+}
+
+func (s Service) ListMatchesPage(ctx context.Context, batchID string, sourceVersion int64, query, method string, page, pageSize int) ([]MatchView, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
 	if sourceVersion == 0 {
 		var err error
 		err = s.DB.QueryRowContext(ctx, `SELECT source_version FROM reconciliation_batches WHERE id=$1`, batchID).Scan(&sourceVersion)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
+	}
+	var total int
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM transaction_matches m JOIN reconciliation_runs rr ON rr.id=m.run_id JOIN transactions i ON i.id=m.internal_transaction_id WHERE m.batch_id=$1 AND rr.source_version=$2 AND m.active AND ($3='' OR i.reference_canonical ILIKE '%'||upper($3)||'%') AND ($4='' OR m.method=$4)`, batchID, sourceVersion, query, method).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT m.id::text,i.reference_raw,i.id::text,b.id::text,i.transaction_date,b.transaction_date,i.direction,b.direction,i.amount_rupiah,b.amount_rupiah,m.method,rr.rule_version,COALESCE(m.approval_id::text,'')
 		FROM transaction_matches m JOIN reconciliation_runs rr ON rr.id=m.run_id
 		JOIN transactions i ON i.id=m.internal_transaction_id JOIN transactions b ON b.id=m.bank_transaction_id
-		WHERE m.batch_id=$1 AND rr.source_version=$2 AND m.active ORDER BY i.reference_canonical,i.id`, batchID, sourceVersion)
+		WHERE m.batch_id=$1 AND rr.source_version=$2 AND m.active AND ($3='' OR i.reference_canonical ILIKE '%'||upper($3)||'%') AND ($4='' OR m.method=$4) ORDER BY i.reference_canonical,i.id LIMIT $5 OFFSET $6`, batchID, sourceVersion, query, method, pageSize, (page-1)*pageSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	items := make([]MatchView, 0)
 	for rows.Next() {
 		var item MatchView
 		if err := rows.Scan(&item.ID, &item.ReferenceID, &item.InternalTransactionID, &item.BankTransactionID, &item.InternalDate, &item.BankDate, &item.InternalDirection, &item.BankDirection, &item.InternalAmount, &item.BankAmount, &item.Method, &item.RuleID, &item.ApprovalID); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, total, rows.Err()
 }
 
 func (s Service) RetryFailedBatch(ctx context.Context, batchID string, expectedVersion int64, actorID, requestID, ip string) error {

@@ -52,7 +52,11 @@ func (a *api) createBatch(w http.ResponseWriter, r *http.Request) {
 func (a *api) listBatches(w http.ResponseWriter, r *http.Request) {
 	principal, _ := identity.PrincipalFromContext(r.Context())
 	page, pageSize := pageArgs(r)
-	items, total, err := a.reconciliation.ListBatches(r.Context(), principal.UserID, isOperator(principal), r.URL.Query().Get("q"), r.URL.Query().Get("status"), r.URL.Query().Get("account_id"), "", "", page, pageSize)
+	from, to, ok := reportPeriod(w, r)
+	if !ok {
+		return
+	}
+	items, total, err := a.reconciliation.ListBatches(r.Context(), principal.UserID, isOperator(principal), r.URL.Query().Get("q"), r.URL.Query().Get("status"), r.URL.Query().Get("account_id"), from, to, page, pageSize)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
@@ -62,7 +66,7 @@ func (a *api) listBatches(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) getBatch(w http.ResponseWriter, r *http.Request) {
 	principal, _ := identity.PrincipalFromContext(r.Context())
-	if err := reconciliation.CheckOwnership(r.Context(), a.db, r.PathValue("id"), principal.UserID, isOperator(principal)); err != nil {
+	if err := reconciliation.CheckBatchReadAccess(r.Context(), a.db, r.PathValue("id"), principal.UserID, isOperator(principal)); err != nil {
 		a.notFoundOrError(w, r, err, "Batch tidak ditemukan.")
 		return
 	}
@@ -282,12 +286,13 @@ func (a *api) listMatches(w http.ResponseWriter, r *http.Request) {
 		a.notFoundOrError(w, r, err, "Batch tidak ditemukan.")
 		return
 	}
-	items, err := a.reconciliation.ListMatches(r.Context(), r.PathValue("id"), 0)
+	page, pageSize := pageArgs(r)
+	items, total, err := a.reconciliation.ListMatchesPage(r.Context(), r.PathValue("id"), 0, r.URL.Query().Get("q"), strings.ToUpper(r.URL.Query().Get("status")), page, pageSize)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusOK, items, map[string]int{"count": len(items)})
+	httpx.JSON(w, r, http.StatusOK, items, paginationMeta(page, pageSize, total))
 }
 
 func (a *api) submitBatch(w http.ResponseWriter, r *http.Request) {
@@ -344,12 +349,69 @@ func (a *api) getTransaction(w http.ResponseWriter, r *http.Request) {
 func (a *api) listExceptions(w http.ResponseWriter, r *http.Request) {
 	principal, _ := identity.PrincipalFromContext(r.Context())
 	page, pageSize := pageArgs(r)
+	from, to, ok := reportPeriod(w, r)
+	if !ok {
+		return
+	}
 	items, total, err := a.exceptions.List(r.Context(), exceptions.ExceptionFilter{
 		Query: r.URL.Query().Get("q"), Type: strings.ToUpper(r.URL.Query().Get("type")), State: strings.ToUpper(r.URL.Query().Get("status")),
-		BatchID: r.URL.Query().Get("batch_id"), AccountID: r.URL.Query().Get("account_id"), AssigneeID: r.URL.Query().Get("assignee_id"), From: r.URL.Query().Get("from"), To: r.URL.Query().Get("to"),
+		BatchID: r.URL.Query().Get("batch_id"), AccountID: r.URL.Query().Get("account_id"), AssigneeID: r.URL.Query().Get("assignee_id"), From: from, To: to, AgeBucket: strings.ToUpper(r.URL.Query().Get("age")),
 		OperatorID: principal.UserID, Operator: isOperator(principal), Page: page, PageSize: pageSize,
 	})
 	if err != nil {
+		a.internalError(w, r, err)
+		return
+	}
+	httpx.JSON(w, r, http.StatusOK, items, paginationMeta(page, pageSize, total))
+}
+
+func (a *api) exceptionSummary(w http.ResponseWriter, r *http.Request) {
+	principal, _ := identity.PrincipalFromContext(r.Context())
+	from, to, ok := reportPeriod(w, r)
+	if !ok {
+		return
+	}
+	items, err := a.exceptions.Summary(r.Context(), exceptions.ExceptionFilter{
+		Query: r.URL.Query().Get("q"), Type: strings.ToUpper(r.URL.Query().Get("type")), State: strings.ToUpper(r.URL.Query().Get("status")),
+		BatchID: r.URL.Query().Get("batch_id"), AccountID: r.URL.Query().Get("account_id"), AssigneeID: r.URL.Query().Get("assignee_id"), From: from, To: to, AgeBucket: strings.ToUpper(r.URL.Query().Get("age")),
+		OperatorID: principal.UserID, Operator: isOperator(principal),
+	})
+	if err != nil {
+		a.internalError(w, r, err)
+		return
+	}
+	httpx.JSON(w, r, http.StatusOK, items, nil)
+}
+
+func (a *api) listExceptionOperators(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := pageArgs(r)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	var total int
+	base := ` FROM users u JOIN roles r ON r.id=u.role_id WHERE u.active AND r.code='OPERATOR' AND ($1='' OR u.full_name ILIKE '%'||$1||'%')`
+	if err := a.db.QueryRowContext(r.Context(), `SELECT count(*)`+base, q).Scan(&total); err != nil {
+		a.internalError(w, r, err)
+		return
+	}
+	rows, err := a.db.QueryContext(r.Context(), `SELECT u.id::text,u.full_name`+base+` ORDER BY u.full_name,u.id LIMIT $2 OFFSET $3`, q, pageSize, (page-1)*pageSize)
+	if err != nil {
+		a.internalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	type operator struct {
+		ID       string `json:"id"`
+		FullName string `json:"full_name"`
+	}
+	items := make([]operator, 0)
+	for rows.Next() {
+		var item operator
+		if err := rows.Scan(&item.ID, &item.FullName); err != nil {
+			a.internalError(w, r, err)
+			return
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
 		a.internalError(w, r, err)
 		return
 	}
@@ -460,12 +522,13 @@ func (a *api) listApprovals(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, http.StatusForbidden, "forbidden", "Akses approval hanya tersedia bagi Checker dan Auditor.")
 		return
 	}
-	items, err := a.exceptions.ListApprovals(r.Context(), strings.ToUpper(r.URL.Query().Get("status")), strings.ToUpper(r.URL.Query().Get("kind")))
+	page, pageSize := pageArgs(r)
+	items, total, err := a.exceptions.ListApprovalsPage(r.Context(), strings.ToUpper(r.URL.Query().Get("status")), strings.ToUpper(r.URL.Query().Get("kind")), r.URL.Query().Get("q"), page, pageSize)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusOK, items, map[string]int{"count": len(items)})
+	httpx.JSON(w, r, http.StatusOK, items, paginationMeta(page, pageSize, total))
 }
 
 func (a *api) approveRequest(w http.ResponseWriter, r *http.Request) {
@@ -550,12 +613,78 @@ func (a *api) report(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, total, err := a.reconciliation.ListBatches(r.Context(), principal.UserID, isOperator(principal), r.URL.Query().Get("q"), r.URL.Query().Get("status"), r.URL.Query().Get("account_id"), from, to, page, pageSize)
+	q, status, accountID := r.URL.Query().Get("q"), r.URL.Query().Get("status"), r.URL.Query().Get("account_id")
+	items, total, err := a.reconciliation.ListBatches(r.Context(), principal.UserID, isOperator(principal), q, status, accountID, from, to, page, pageSize)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusOK, items, paginationMeta(page, pageSize, total))
+	var summary struct {
+		TotalBatches        int                             `json:"total_batches"`
+		InternalCount       int                             `json:"internal_count"`
+		BankCount           int                             `json:"bank_count"`
+		MatchedPairs        int                             `json:"matched_pairs"`
+		UnmatchedInternal   int                             `json:"unmatched_internal"`
+		ActiveExceptions    int                             `json:"active_exceptions"`
+		MatchRate           float64                         `json:"match_rate"`
+		BatchStatuses       []reconciliation.DashboardCount `json:"batch_statuses"`
+		ExceptionReasons    []reconciliation.DashboardCount `json:"exception_reasons"`
+		AverageMatchSeconds float64                         `json:"average_match_seconds"`
+	}
+	statusCounts := map[string]int{}
+	exceptionCounts := map[string]int{}
+	var elapsedTotal float64
+	var elapsedRuns int
+	for current := 1; ; current++ {
+		batches, count, listErr := a.reconciliation.ListBatches(r.Context(), principal.UserID, isOperator(principal), q, status, accountID, from, to, current, 100)
+		if listErr != nil {
+			a.internalError(w, r, listErr)
+			return
+		}
+		for _, batch := range batches {
+			summary.TotalBatches++
+			summary.InternalCount += batch.InternalCount
+			summary.BankCount += batch.BankCount
+			summary.MatchedPairs += batch.MatchedPairs
+			summary.UnmatchedInternal += max(0, batch.InternalCount-batch.MatchedPairs)
+			summary.ActiveExceptions += batch.ActiveExceptions
+			statusCounts[batch.State]++
+			reasons, summaryErr := a.exceptions.Summary(r.Context(), exceptions.ExceptionFilter{BatchID: batch.ID, OperatorID: principal.UserID, Operator: isOperator(principal)})
+			if summaryErr != nil {
+				a.internalError(w, r, summaryErr)
+				return
+			}
+			for _, reason := range reasons {
+				exceptionCounts[reason.Name] += reason.Count
+			}
+			var average sql.NullFloat64
+			var runCount int
+			if err := a.db.QueryRowContext(r.Context(), `SELECT avg(EXTRACT(EPOCH FROM ended_at-started_at)),count(*) FROM reconciliation_runs WHERE batch_id=$1 AND state='SUCCEEDED' AND ended_at IS NOT NULL`, batch.ID).Scan(&average, &runCount); err != nil {
+				a.internalError(w, r, err)
+				return
+			}
+			if average.Valid && runCount > 0 {
+				elapsedTotal += average.Float64 * float64(runCount)
+				elapsedRuns += runCount
+			}
+		}
+		if current*100 >= count {
+			break
+		}
+	}
+	if summary.InternalCount > 0 {
+		summary.MatchRate = float64(summary.MatchedPairs) * 100 / float64(summary.InternalCount)
+	}
+	for name, count := range statusCounts {
+		summary.BatchStatuses = append(summary.BatchStatuses, reconciliation.DashboardCount{Name: name, Count: count})
+	}
+	for name, count := range exceptionCounts {
+		summary.ExceptionReasons = append(summary.ExceptionReasons, reconciliation.DashboardCount{Name: name, Count: count})
+	}
+	if elapsedRuns > 0 {
+		summary.AverageMatchSeconds = elapsedTotal / float64(elapsedRuns)
+	}
+	httpx.JSON(w, r, http.StatusOK, map[string]any{"items": items, "summary": summary}, paginationMeta(page, pageSize, total))
 }
 
 func reportPeriod(w http.ResponseWriter, r *http.Request) (string, string, bool) {
@@ -584,9 +713,29 @@ func (a *api) exportReport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	reportType := r.URL.Query().Get("type")
+	if reportType == "" {
+		reportType = "all"
+	}
+	if reportType != "all" && reportType != "batches" && reportType != "transactions" && reportType != "exceptions" {
+		httpx.Error(w, r, http.StatusUnprocessableEntity, "invalid_report_type", "Jenis laporan tidak valid.")
+		return
+	}
 	var output bytes.Buffer
 	writer := csv.NewWriter(&output)
-	_ = writer.Write([]string{"record_type", "batch_no", "account", "period_from", "period_to", "source", "reference_id", "date", "direction", "amount_rupiah", "status", "exception_type"})
+	writeRow := func(row []string) {
+		for len(row) < 21 {
+			row = append(row, "")
+		}
+		for i, value := range row {
+			trimmed := strings.TrimLeft(value, " \t\r\n")
+			if len(trimmed) > 0 && strings.ContainsRune("=+-@", rune(trimmed[0])) {
+				row[i] = "'" + value
+			}
+		}
+		_ = writer.Write(row)
+	}
+	writeRow([]string{"record_type", "batch_no", "account", "period_from", "period_to", "source", "reference_id", "date", "direction", "amount_rupiah", "status", "exception_type", "actor", "action", "note", "timestamp", "internal_count", "bank_count", "matched_pairs", "active_exceptions", "match_rate_percent"})
 	for page := 1; ; page++ {
 		batches, totalBatches, err := a.reconciliation.ListBatches(r.Context(), principal.UserID, isOperator(principal), r.URL.Query().Get("q"), r.URL.Query().Get("status"), r.URL.Query().Get("account_id"), from, to, page, 100)
 		if err != nil {
@@ -594,31 +743,77 @@ func (a *api) exportReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, batch := range batches {
-			_ = writer.Write([]string{"BATCH", batch.BatchNo, batch.AccountCode, batch.PeriodFrom.Format("2006-01-02"), batch.PeriodTo.Format("2006-01-02"), "", "", "", "", "", batch.State, ""})
-			for txPage := 1; ; txPage++ {
-				transactions, total, err := a.reconciliation.ListTransactions(r.Context(), reconciliation.TransactionSearch{BatchID: batch.ID, Page: txPage, PageSize: 100, OperatorID: principal.UserID, Operator: isOperator(principal)})
-				if err != nil {
-					a.internalError(w, r, err)
-					return
+			if reportType == "all" || reportType == "batches" {
+				rate := 0.0
+				if batch.InternalCount > 0 {
+					rate = float64(batch.MatchedPairs) * 100 / float64(batch.InternalCount)
 				}
-				for _, transaction := range transactions {
-					_ = writer.Write([]string{"TRANSACTION", batch.BatchNo, batch.AccountCode, "", "", transaction.SourceType, transaction.ReferenceID, transaction.Date.Format("2006-01-02"), transaction.Direction, strconv.FormatInt(transaction.Amount, 10), transaction.Status, ""})
-				}
-				if txPage*100 >= total {
-					break
+				writeRow([]string{"BATCH", batch.BatchNo, batch.AccountCode, batch.PeriodFrom.Format("2006-01-02"), batch.PeriodTo.Format("2006-01-02"), "", "", "", "", "", batch.State, "", "", "", "", "", strconv.Itoa(batch.InternalCount), strconv.Itoa(batch.BankCount), strconv.Itoa(batch.MatchedPairs), strconv.Itoa(batch.ActiveExceptions), strconv.FormatFloat(rate, 'f', 2, 64)})
+			}
+			if reportType == "all" || reportType == "transactions" {
+				for txPage := 1; ; txPage++ {
+					transactions, total, err := a.reconciliation.ListTransactions(r.Context(), reconciliation.TransactionSearch{BatchID: batch.ID, Page: txPage, PageSize: 100, OperatorID: principal.UserID, Operator: isOperator(principal)})
+					if err != nil {
+						a.internalError(w, r, err)
+						return
+					}
+					for _, transaction := range transactions {
+						writeRow([]string{"TRANSACTION", batch.BatchNo, batch.AccountCode, "", "", transaction.SourceType, transaction.ReferenceID, transaction.Date.Format("2006-01-02"), transaction.Direction, strconv.FormatInt(transaction.Amount, 10), transaction.Status, "", "", "", "", ""})
+					}
+					if txPage*100 >= total {
+						break
+					}
 				}
 			}
-			for exceptionPage := 1; ; exceptionPage++ {
-				exceptionsList, total, err := a.exceptions.List(r.Context(), exceptions.ExceptionFilter{BatchID: batch.ID, OperatorID: principal.UserID, Operator: isOperator(principal), Page: exceptionPage, PageSize: 100})
-				if err != nil {
-					a.internalError(w, r, err)
-					return
-				}
-				for _, exception := range exceptionsList {
-					_ = writer.Write([]string{"EXCEPTION", batch.BatchNo, batch.AccountCode, "", "", "", exception.ReferenceID, "", "", "", exception.State, exception.Type})
-				}
-				if exceptionPage*100 >= total {
-					break
+			if reportType == "all" || reportType == "exceptions" {
+				for exceptionPage := 1; ; exceptionPage++ {
+					exceptionsList, total, err := a.exceptions.List(r.Context(), exceptions.ExceptionFilter{BatchID: batch.ID, OperatorID: principal.UserID, Operator: isOperator(principal), Page: exceptionPage, PageSize: 100})
+					if err != nil {
+						a.internalError(w, r, err)
+						return
+					}
+					for _, exception := range exceptionsList {
+						writeRow([]string{"EXCEPTION", batch.BatchNo, batch.AccountCode, "", "", "", exception.ReferenceID, "", "", "", exception.State, exception.Type, "", "", "", ""})
+						if reportType == "exceptions" {
+							detail, err := a.exceptions.Detail(r.Context(), exception.ID, principal.UserID, isOperator(principal))
+							if err != nil {
+								a.internalError(w, r, err)
+								return
+							}
+							for _, action := range detail.Actions {
+								writeRow([]string{"EXCEPTION_ACTION", batch.BatchNo, batch.AccountCode, "", "", "", exception.ReferenceID, "", "", "", exception.State, exception.Type, action.ActorName, action.ActionType, action.Note, action.CreatedAt.Format(time.RFC3339)})
+							}
+							decisions, err := a.db.QueryContext(r.Context(), `SELECT a.state,COALESCE(u.full_name,''),a.reason,a.decision_comment,a.created_at,a.decided_at FROM approval_requests a LEFT JOIN users u ON u.id=a.checker_id WHERE a.exception_id=$1 ORDER BY a.created_at`, exception.ID)
+							if err != nil {
+								a.internalError(w, r, err)
+								return
+							}
+							for decisions.Next() {
+								var state, actor, reason, comment string
+								var created time.Time
+								var decided sql.NullTime
+								if err := decisions.Scan(&state, &actor, &reason, &comment, &created, &decided); err != nil {
+									decisions.Close()
+									a.internalError(w, r, err)
+									return
+								}
+								stamp := created
+								if decided.Valid {
+									stamp = decided.Time
+								}
+								writeRow([]string{"EXCEPTION_APPROVAL", batch.BatchNo, batch.AccountCode, "", "", "", exception.ReferenceID, "", "", "", state, exception.Type, actor, "MANUAL_MATCH", strings.TrimSpace(reason + " " + comment), stamp.Format(time.RFC3339)})
+							}
+							if err := decisions.Err(); err != nil {
+								decisions.Close()
+								a.internalError(w, r, err)
+								return
+							}
+							decisions.Close()
+						}
+					}
+					if exceptionPage*100 >= total {
+						break
+					}
 				}
 			}
 		}
@@ -632,16 +827,28 @@ func (a *api) exportReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="reconx-reconciliation.csv"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="reconx-`+reportType+`.csv"`)
 	_, _ = w.Write(output.Bytes())
 }
 
 func (a *api) listAuditLogs(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := pageArgs(r)
+	q, entity, actor, from, to := r.URL.Query().Get("q"), r.URL.Query().Get("entity"), r.URL.Query().Get("actor"), r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	from, to, ok := reportPeriod(w, r)
+	if !ok {
+		return
+	}
+	where := ` WHERE ($1='' OR l.action ILIKE '%'||$1||'%' OR l.entity ILIKE '%'||$1||'%' OR l.entity_id ILIKE '%'||$1||'%')
+		AND ($2='' OR l.entity=$2) AND ($3='' OR l.actor_id::text=$3 OR u.full_name ILIKE '%'||$3||'%')
+		AND ($4='' OR l.created_at::date >= $4::date) AND ($5='' OR l.created_at::date <= $5::date)`
+	var total int
+	if err := a.db.QueryRowContext(r.Context(), `SELECT count(*) FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id`+where, q, entity, actor, from, to).Scan(&total); err != nil {
+		a.internalError(w, r, err)
+		return
+	}
 	query := `SELECT l.id::text,COALESCE(u.full_name,'System') actor,l.action,l.entity,l.entity_id,l.before_json,l.after_json,l.request_id,COALESCE(l.ip_address::text,''),l.created_at
-		FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id WHERE ($1='' OR l.action ILIKE '%'||$1||'%' OR l.entity ILIKE '%'||$1||'%' OR l.entity_id ILIKE '%'||$1||'%')
-		AND ($2='' OR l.entity=$2) ORDER BY l.created_at DESC LIMIT $3 OFFSET $4`
-	rows, err := a.db.QueryContext(r.Context(), query, r.URL.Query().Get("q"), r.URL.Query().Get("entity"), pageSize, (page-1)*pageSize)
+		FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id` + where + ` ORDER BY l.created_at DESC LIMIT $6 OFFSET $7`
+	rows, err := a.db.QueryContext(r.Context(), query, q, entity, actor, from, to, pageSize, (page-1)*pageSize)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
@@ -674,7 +881,7 @@ func (a *api) listAuditLogs(w http.ResponseWriter, r *http.Request) {
 		a.internalError(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusOK, items, map[string]any{"page": page, "page_size": pageSize})
+	httpx.JSON(w, r, http.StatusOK, items, paginationMeta(page, pageSize, total))
 }
 
 func (a *api) listNotifications(w http.ResponseWriter, r *http.Request) {
@@ -858,6 +1065,8 @@ func (a *api) importError(w http.ResponseWriter, r *http.Request, err error) {
 
 func (a *api) exceptionError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, reconciliation.ErrForbiddenScope):
+		httpx.Error(w, r, http.StatusForbidden, "forbidden", "Exception berada di luar cakupan Operator.")
 	case errors.Is(err, exceptions.ErrInvalidAction), errors.Is(err, exceptions.ErrNotEligible):
 		httpx.Error(w, r, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, exceptions.ErrApprovalConflict), errors.Is(err, reconciliation.ErrBatchConflict):

@@ -27,22 +27,37 @@ type AccountView struct {
 type Service struct{ DB *sql.DB }
 
 func (s Service) ListAccounts(ctx context.Context, query string, active *bool) ([]AccountView, error) {
+	items, _, err := s.ListAccountsPage(ctx, query, active, 1, 100)
+	return items, err
+}
+
+func (s Service) ListAccountsPage(ctx context.Context, query string, active *bool, page, pageSize int) ([]AccountView, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	var total int
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM bank_accounts WHERE ($1='' OR account_code ILIKE '%'||$1||'%' OR bank_display_name ILIKE '%'||$1||'%') AND ($2::boolean IS NULL OR active=$2)`, strings.TrimSpace(query), active).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT id::text, account_code, bank_display_name, masked_account_no, account_holder_name, currency, timezone, active
 		FROM bank_accounts WHERE ($1 = '' OR account_code ILIKE '%'||$1||'%' OR bank_display_name ILIKE '%'||$1||'%')
-		AND ($2::boolean IS NULL OR active = $2) ORDER BY account_code`, strings.TrimSpace(query), active)
+		AND ($2::boolean IS NULL OR active = $2) ORDER BY account_code LIMIT $3 OFFSET $4`, strings.TrimSpace(query), active, pageSize, (page-1)*pageSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	accounts := make([]AccountView, 0)
 	for rows.Next() {
 		var account AccountView
 		if err := rows.Scan(&account.ID, &account.Code, &account.BankDisplayName, &account.MaskedAccountNumber, &account.AccountHolderName, &account.Currency, &account.TimeZone, &account.Active); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		accounts = append(accounts, account)
 	}
-	return accounts, rows.Err()
+	return accounts, total, rows.Err()
 }
 
 func (s Service) GetAccount(ctx context.Context, id string) (AccountView, error) {
