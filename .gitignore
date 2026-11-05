@@ -37,6 +37,7 @@ frontend/pnpm-debug.log*
 *.pid
 .postgres-data/
 .rbac-test-*/
+.e2e-test-*/
 *.sqlite
 *.sqlite3
 *.db

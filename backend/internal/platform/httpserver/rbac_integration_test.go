@@ -18,7 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
+	"reconx/backend/internal/modules/exceptions"
 	"reconx/backend/internal/modules/identity"
+	"reconx/backend/internal/modules/reconciliation"
 	"reconx/backend/internal/platform/migrate"
 )
 
@@ -226,4 +228,90 @@ func TestRBACAndAssignedExceptionIntegration(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id=$1 AND type='EXCEPTION_ASSIGNED' AND target_entity_id=$2`, assigneeID, exceptionID).Scan(&notifications); err != nil || notifications != 1 {
 		t.Fatalf("assignment notifications=%d, error=%v", notifications, err)
 	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO approval_requests(kind,batch_id,run_id,source_version,maker_id,state,created_at) SELECT 'BATCH_CLOSE',$1,$2,1,$3,'PENDING',now()+interval '1 day' FROM generate_series(1,101)`, batchID, runID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	oldApproval, err := (exceptions.Service{DB: db}).GetApproval(ctx, approvalID)
+	if err != nil || oldApproval.ID != approvalID {
+		t.Fatalf("approval outside the first page: id=%s error=%v", oldApproval.ID, err)
+	}
+	assertStatus(request("GET", "/api/v1/approvals/"+approvalID, "", "", checker), http.StatusOK)
+	assertStatus(request("GET", "/api/v1/approvals/"+approvalID, "", "", owner), http.StatusForbidden)
+	t.Run("import matching revision and closing", func(t *testing.T) {
+		var workflowAccount string
+		queryID(&workflowAccount, `INSERT INTO bank_accounts(account_code,bank_display_name,masked_account_no,account_holder_name,created_by) VALUES('WORKFLOW','Workflow','****1234','Test',$1) RETURNING id::text`, adminID)
+		recon := reconciliation.Service{DB: db, StoragePath: t.TempDir()}
+		decisions := exceptions.Service{DB: db}
+		date := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		batch, err := recon.CreateBatch(ctx, reconciliation.BatchInput{AccountID: workflowAccount, PeriodFrom: date, PeriodTo: date.AddDate(0, 0, 30)}, ownerID, "workflow-test", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		header := "reference_id,date,direction,amount,currency\n"
+		row := "TEST-001,2026-01-01,DEBIT,100,IDR\n"
+		invalid, err := recon.UploadCSV(ctx, batch.ID, "INTERNAL", "invalid.csv", []byte(header+"bad,not-a-date,DEBIT,100,IDR\n"), ownerID, "workflow-test", "")
+		if err != nil || invalid.State != "INVALID" {
+			t.Fatalf("invalid import: %+v, %v", invalid, err)
+		}
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM transactions WHERE batch_id=$1`, batch.ID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("invalid import created %d transactions: %v", count, err)
+		}
+		for _, input := range []struct{ source, content string }{{"INTERNAL", header + row + row}, {"BANK", header + row}} {
+			result, err := recon.UploadCSV(ctx, batch.ID, input.source, input.source+".csv", []byte(input.content), ownerID, "workflow-test", "")
+			if err != nil || result.State != "VALID" {
+				t.Fatalf("valid import %s: %+v %v", input.source, result, err)
+			}
+		}
+		batch, err = recon.GetBatch(ctx, batch.ID)
+		if err != nil || batch.State != "READY" {
+			t.Fatalf("expected READY: %+v %v", batch, err)
+		}
+		if _, err = recon.RunMatching(ctx, batch.ID, batch.RowVersion, ownerID, "workflow-test", ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM reconciliation_exceptions WHERE batch_id=$1 AND type='AMBIGUOUS_MATCH' AND state='OPEN'`, batch.ID).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("ambiguous exceptions=%d: %v", count, err)
+		}
+		batch, err = recon.GetBatch(ctx, batch.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recon.SubmitBatch(ctx, batch.ID, batch.RowVersion, ownerID, "workflow-test", ""); err == nil {
+			t.Fatal("ambiguous batch must not be submitted")
+		}
+		if err = recon.ReopenForCorrection(ctx, batch.ID, batch.RowVersion, ownerID, "workflow-test", ""); err != nil {
+			t.Fatal(err)
+		}
+		batch, err = recon.GetBatch(ctx, batch.ID)
+		if err != nil || batch.State != "DRAFT" || batch.SourceVersion != 2 {
+			t.Fatalf("revision: %+v %v", batch, err)
+		}
+		for _, source := range []string{"INTERNAL", "BANK"} {
+			result, err := recon.UploadCSV(ctx, batch.ID, source, source+"-corrected.csv", []byte(header+row+"\n"), ownerID, "workflow-test", "")
+			if err != nil || result.State != "VALID" {
+				t.Fatalf("reimport %s: %+v %v", source, result, err)
+			}
+		}
+		batch, _ = recon.GetBatch(ctx, batch.ID)
+		if _, err = recon.RunMatching(ctx, batch.ID, batch.RowVersion, ownerID, "workflow-test", ""); err != nil {
+			t.Fatal(err)
+		}
+		batch, _ = recon.GetBatch(ctx, batch.ID)
+		approval, err := recon.SubmitBatch(ctx, batch.ID, batch.RowVersion, ownerID, "workflow-test", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = decisions.DecideApproval(ctx, approval, "APPROVE", "", checkerID, "workflow-test", ""); err != nil {
+			t.Fatal(err)
+		}
+		batch, _ = recon.GetBatch(ctx, batch.ID)
+		if err = decisions.CloseApprovedBatch(ctx, batch.ID, batch.RowVersion, checkerID, "workflow-test", ""); err != nil {
+			t.Fatal(err)
+		}
+		batch, err = recon.GetBatch(ctx, batch.ID)
+		if err != nil || batch.State != "CLOSED" {
+			t.Fatalf("expected CLOSED: %+v %v", batch, err)
+		}
+	})
 }

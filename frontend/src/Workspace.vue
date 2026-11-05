@@ -4,6 +4,20 @@ import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import DataTable from './components/DataTable.vue'
 import GlobalDropdown from './components/GlobalDropdown.vue'
+import ReportView from './features/reports/ReportView.vue'
+import DashboardView from './features/dashboard/DashboardView.vue'
+import ImportView from './features/imports/ImportView.vue'
+import ExceptionDetail from './features/exceptions/ExceptionDetail.vue'
+import BatchDetail from './features/batches/BatchDetail.vue'
+import { fetchBatch } from './features/batches/batchApi'
+import { useBatchWorkflow } from './features/batches/useBatchWorkflow'
+import { fetchApproval, fetchException } from './features/exceptions/exceptionApi'
+import { useExceptionActions } from './features/exceptions/useExceptionActions'
+import { useImportWorkflow, importValidationMessage } from './features/imports/useImportWorkflow'
+import { useMatchingWorkflow } from './features/matching/useMatchingWorkflow'
+import RecordDetail from './features/details/RecordDetail.vue'
+import DetailDialog from './features/details/DetailDialog.vue'
+import { useReportWorkflow } from './features/reports/useReportWorkflow'
 import { ApiError, apiRequest, downloadFile, isActionLoading } from './api'
 import { useSessionStore, type SessionUser } from './stores/session'
 
@@ -263,52 +277,6 @@ const tableConfig: Partial<Record<Page, { columns: { key: string; label: string 
 }
 
 const currentTitle = computed(() => titles[page.value])
-const reportStatusChart = computed(() => {
-  const palette = ['#0d9488', '#488ec1', '#e5a23d', '#8e79c8', '#70b8a5', '#e5906a', '#97aab8', '#b96f78']
-  const items = ((reportSummary.value.batch_statuses ?? []) as {name: string; count: number}[]).filter(item => item.count > 0)
-  const total = items.reduce((sum, item) => sum + item.count, 0)
-  let offset = 0
-  const segments = items.map((item, index) => { const start = offset; offset += item.count / total * 100; return {...item, color: palette[index % palette.length], start, end: offset} })
-  return {total, segments, background: `conic-gradient(${segments.map(item => `${item.color} ${item.start}% ${item.end}%`).join(', ')})`}
-})
-const reportExceptionChart = computed(() => {
-  const items = (reportSummary.value.exception_reasons ?? []) as {name: string; count: number}[]
-  const max = Math.max(1, ...items.map(item => item.count))
-  return items.map(item => ({...item, width: `${item.count / max * 100}%`}))
-})
-const dashboardTrendPoints = computed(() => {
-  const points = (dashboardSummary.value.daily_trend ?? []) as { date: string; matched_count: number; unmatched_count: number }[]
-  const visible = points.slice(-14)
-  const maximum = Math.max(1, ...visible.map(point => point.matched_count + point.unmatched_count))
-  return visible.map(point => ({
-    ...point,
-    label: new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', timeZone: 'Asia/Jakarta' }).format(new Date(point.date)),
-    matchedHeight: `${point.matched_count / maximum * 100}%`,
-    unmatchedHeight: `${point.unmatched_count / maximum * 100}%`,
-  }))
-})
-const dashboardStatusPoints = computed(() => dashboardSummary.value.batch_statuses ?? [])
-const dashboardExceptionPoints = computed(() => dashboardSummary.value.exception_reasons ?? [])
-const trendChart = computed(() => {
-  const points = dashboardTrendPoints.value
-  const maximum = Math.max(1, ...points.flatMap(point => [point.matched_count, point.unmatched_count]))
-  const ticks = Array.from(new Set([0, Math.floor((points.length - 1) / 4), Math.floor((points.length - 1) / 2), Math.floor((points.length - 1) * 3 / 4), points.length - 1])).filter(i => i >= 0)
-  const chartPoints = points.map((point, i) => ({ ...point, x: points.length === 1 ? 500 : 30 + i * 940 / (points.length - 1), matchedY: 160 - point.matched_count / maximum * 140, unmatchedY: 160 - point.unmatched_count / maximum * 140 }))
-  return { points: chartPoints, matched: chartPoints.map(p => `${p.x},${p.matchedY}`).join(' '), unmatched: chartPoints.map(p => `${p.x},${p.unmatchedY}`).join(' '), ticks: ticks.map(i => chartPoints[i]).filter(Boolean), maximum }
-})
-const statusChart = computed(() => {
-  const palette: Record<string, string> = { DRAFT: '#94a9ba', READY: '#3e88c7', PROCESSING: '#637bd4', REVIEW: '#e3a73c', PENDING_APPROVAL: '#ec905b', APPROVED: '#54b996', CLOSED: '#0d9488', CANCELLED: '#c97076', FAILED: '#dc6767' }
-  const items = (dashboardStatusPoints.value as { name: string; count: number }[]).filter(item => item.count > 0)
-  const total = items.reduce((sum, item) => sum + item.count, 0)
-  let offset = 0
-  const segments = items.map(item => { const start = offset; offset += item.count / total * 100; return { ...item, color: palette[item.name] ?? '#708c9a', start, end: offset } })
-  return { total, segments, background: `conic-gradient(${segments.map(item => `${item.color} ${item.start}% ${item.end}%`).join(', ')})` }
-})
-const exceptionChart = computed(() => {
-  const items = dashboardExceptionPoints.value as { name: string; count: number }[]
-  const maximum = Math.max(1, ...items.map(item => item.count))
-  return items.map(item => ({ ...item, width: `${item.count / maximum * 100}%` }))
-})
 const visibleNavGroups = computed(() => {
   const role = currentUser.value?.role
   const allowed: Record<string, Page[]> = {
@@ -421,15 +389,17 @@ watch(() => [page.value, route.params.id] as const, async ([currentPage, routeID
     selectedBatchID.value = id
     activeTab.value = 'Ringkasan'
     try {
-      const { data } = await apiRequest<Record<string, any>>(`/api/v1/batches/${id}`)
+      const { data } = await fetchBatch(id)
       const index = rawBatches.value.findIndex(batch => batch.id === id)
       if (index >= 0) rawBatches.value.splice(index, 1, data)
       else rawBatches.value.unshift(data)
       if (currentUser.value?.role !== 'OPERATOR' || data.created_by === currentUser.value.id) await Promise.all([loadMatches(), loadBatchDetails(), loadImports()])
+      detailPopup.value = 'batch'
     } catch (error) { showToast(error instanceof Error ? error.message : 'Batch tidak dapat dibuka.') }
-  } else if (currentPage === 'exceptionDetail' && id && id !== selectedExceptionID.value) {
+  } else if (currentPage === 'exceptionDetail' && id) {
     selectedExceptionID.value = id
     await loadExceptionDetail()
+    if (exceptionDetail.value?.id === id) detailPopup.value = 'exception'
   }
 }, { immediate: true })
 
@@ -618,24 +588,11 @@ async function loadMatchingBatchOptions() {
 const exceptionSummaryCounts = ref<Record<string, number>>({})
 const auditLogs = ref<Record<string, any>[]>([])
 
-async function loadReport() {
-  reportLoading.value = true
-  reportError.value = ''
-  reportForbidden.value = false
-  const params = new URLSearchParams({ page: String(currentPage.value), page_size: String(pageSize) })
-  if (reportFrom.value) params.set('from', reportFrom.value)
-  if (reportTo.value) params.set('to', reportTo.value)
-  if (reportAccountID.value) params.set('account_id', reportAccountID.value)
-  if (reportQuery.value.trim()) params.set('q', reportQuery.value.trim())
-  if (reportStatus.value) params.set('status', reportStatus.value)
-  try {
-    const { data, meta } = await apiRequest<{ items: Record<string, any>[]; summary: Record<string, any> }>(`/api/v1/reports/reconciliations?${params}`)
-    reportSummary.value = data.summary
-    paginationTotal.value = Number(meta?.total ?? data.items.length)
-    batchRows.value.splice(0, batchRows.value.length, ...data.items.map(item => ({ id: item.id, batch: item.batch_no, name: item.remarks || item.bank_display_name, source: item.account_code, period: `${formatDate(item.period_from)} – ${formatDate(item.period_to)}`, total: `${item.internal_count} + ${item.bank_count}`, rate: `${(item.internal_count ? item.matched_pairs * 100 / item.internal_count : 0).toFixed(1)}%`, status: item.state, updated: formatDate(item.updated_at) })))
-  } catch (error) { reportForbidden.value = error instanceof ApiError && error.status === 403; reportError.value = error instanceof Error ? error.message : 'Laporan tidak dapat dimuat.' }
-  finally { reportLoading.value = false }
-}
+const { loadReport, downloadReport } = useReportWorkflow({
+  from: reportFrom, to: reportTo, accountId: reportAccountID, query: reportQuery, status: reportStatus, exportType: reportExportType,
+  page: currentPage, pageSize, total: paginationTotal, rows: batchRows, summary: reportSummary,
+  loading: reportLoading, forbidden: reportForbidden, error: reportError, formatDate, showToast,
+})
 
 async function loadDashboard() {
   if (dashboardFrom.value && dashboardTo.value && dashboardFrom.value > dashboardTo.value) {
@@ -792,7 +749,7 @@ async function openTableRow(row?: Row) {
   if (page.value === 'batches' || page.value === 'dashboard' || page.value === 'reports') { if (row?.id) await openBatchPopup(row.id) }
   else if (page.value === 'transactions' && row?.id) await openTransaction(row)
   else if (page.value === 'exceptions' && row?.id) await openExceptionPopup(row.id)
-  else if (page.value === 'approvals') { selectedApprovalID.value = row?.id || ''; modal.value = 'approval'; decisionComment.value = '' }
+  else if (page.value === 'approvals' && row?.id) await openApproval(row.id)
   else if (page.value === 'audit' && row?.id) { auditDetail.value = auditLogs.value.find(item => item.id === row.id) ?? null; if (auditDetail.value) modal.value = 'auditDetail' }
   else if (page.value === 'users' && row?.id) {
     selectedUserID.value = row.id; resetPasswordValue.value = ''
@@ -810,7 +767,7 @@ async function openTableRow(row?: Row) {
 }
 async function openBatchPopup(id: string) {
   try {
-    const { data } = await apiRequest<Record<string, any>>(`/api/v1/batches/${id}`)
+    const { data } = await fetchBatch(id)
     const index = rawBatches.value.findIndex(batch => batch.id === id)
     if (index >= 0) rawBatches.value.splice(index, 1, data); else rawBatches.value.unshift(data)
     selectedBatchID.value = id
@@ -840,8 +797,11 @@ function handleDetailEscape(event: KeyboardEvent) {
   else if (detailPopup.value) closeDetailPopup()
 }
 function closeDetailPopup() {
-  detailPopup.value = previousDetailPopup.value
+  const previous = previousDetailPopup.value
+  detailPopup.value = previous
   previousDetailPopup.value = ''
+  if (!previous && page.value === 'batchDetail') void navigate('batches')
+  else if (!previous && page.value === 'exceptionDetail') void navigate('exceptions')
 }
 async function openTransaction(row: Row) {
   if (!row.id) return
@@ -855,30 +815,6 @@ async function openTransaction(row: Row) {
     modal.value = 'transaction'
   } catch (error) { showToast(error instanceof Error ? error.message : 'Detail transaksi tidak dapat dibuka.') }
 }
-const auditActionLabels: Record<string, string> = {
-  LOGIN: 'Masuk ke aplikasi', LOGOUT: 'Keluar dari aplikasi', USER_CREATED: 'Pengguna ditambahkan', USER_UPDATED: 'Data pengguna diperbarui', USER_PASSWORD_RESET: 'Kata sandi diatur ulang',
-  ACCOUNT_CREATED: 'Rekening ditambahkan', ACCOUNT_UPDATED: 'Rekening diperbarui', BATCH_CREATED: 'Batch dibuat', BATCH_UPDATED: 'Batch diperbarui', BATCH_CANCELLED: 'Batch dibatalkan', BATCH_REOPENED: 'Batch dibuka untuk koreksi', BATCH_SUBMITTED: 'Batch diajukan untuk persetujuan', BATCH_CLOSED: 'Batch ditutup',
-  IMPORT_VALIDATED: 'Validasi impor selesai', MATCH_RUN_STARTED: 'Matching dimulai', MATCH_RUN_COMPLETED: 'Matching selesai', MATCH_RUN_FAILED: 'Matching gagal', MATCH_RUN_RETRY: 'Matching disiapkan untuk dicoba kembali', EXCEPTION_ASSIGN: 'Penanggung jawab ditugaskan', EXCEPTION_NOTE: 'Catatan investigasi ditambahkan', EXCEPTION_EVIDENCE_UPLOADED: 'Bukti diunggah', MANUAL_MATCH_PROPOSED: 'Manual match diajukan', APPROVAL_APPROVED: 'Pengajuan disetujui', APPROVAL_REJECTED: 'Pengajuan ditolak', SETTINGS_UPDATED: 'Pengaturan diperbarui',
-}
-const auditFieldLabels: Record<string, string> = { state: 'Status', status: 'Status', batch_no: 'Nomor batch', period_from: 'Periode mulai', period_to: 'Periode akhir', source_version: 'Versi data', rule_version: 'Aturan matching', matched_pairs: 'Pasangan cocok', exceptions: 'Jumlah exception', rows_count: 'Jumlah baris', source_type: 'Sumber data', file_name: 'Nama file', email: 'Email', role: 'Role', active: 'Status akun', full_name: 'Nama', bank_display_name: 'Nama rekening', account_code: 'Kode rekening', masked_account_no: 'Nomor rekening', account_holder_name: 'Pemilik rekening', note: 'Catatan', comment: 'Komentar', result: 'Hasil', error: 'Keterangan', timezone: 'Zona waktu', max_import_bytes: 'Batas ukuran impor', csv_delimiter: 'Pemisah CSV' }
-const readableStatus: Record<string, string> = { DRAFT: 'Draft', READY: 'Siap diproses', PROCESSING: 'Sedang diproses', REVIEW: 'Dalam pemeriksaan', PENDING: 'Menunggu persetujuan', PENDING_APPROVAL: 'Menunggu persetujuan', APPROVED: 'Disetujui', REJECTED: 'Ditolak', CLOSED: 'Ditutup', CANCELLED: 'Dibatalkan', FAILED: 'Gagal', OPEN: 'Terbuka', INVESTIGATING: 'Dalam investigasi', PENDING_ACTION_APPROVAL: 'Menunggu persetujuan', RESOLVED: 'Selesai', ARCHIVED: 'Diarsipkan', VALID: 'Valid', INVALID: 'Tidak valid', MATCHED: 'Sudah cocok', UNMATCHED: 'Belum cocok', EXCEPTION: 'Perlu pemeriksaan', INTERNAL: 'Internal', BANK: 'Bank', CREDIT: 'Kredit', DEBIT: 'Debit', success: 'Berhasil', batch: 'Batch', run: 'Proses matching', user: 'Pengguna', bank_account: 'Rekening', exception: 'Exception', approval: 'Persetujuan', settings: 'Pengaturan', import: 'Impor' }
-function humanLabel(value: unknown) { const text = String(value ?? ''); return auditActionLabels[text] || readableStatus[text] || text.replace(/_/g, ' ').toLowerCase().replace(/^./, letter => letter.toUpperCase()) || '—' }
-function auditFields(value: unknown): { label: string; value: string }[] {
-  let data = value
-  if (typeof data === 'string') { try { data = JSON.parse(data) } catch { return [] } }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return []
-  return Object.entries(data as Record<string, unknown>).flatMap(([key, item]) => {
-    if (key === 'id' || key.endsWith('_id') || key === 'assigned_to' || item === null || item === undefined || typeof item === 'object') return []
-    const text = String(item)
-    if (/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(text) || /^[0-9a-f]{32,}$/i.test(text)) return []
-    let display = key === 'error' ? 'Terjadi kendala saat proses berlangsung.' : typeof item === 'boolean' ? (item ? 'Aktif' : 'Nonaktif') : (readableStatus[text] ?? text)
-    if ((key === 'period_from' || key === 'period_to') && !Number.isNaN(Date.parse(text))) display = formatDate(text)
-    return [{ label: auditFieldLabels[key] || humanLabel(key), value: display || '—' }]
-  })
-}
-function formatDateTime(value?: string) { if (!value || Number.isNaN(Date.parse(value))) return '—'; return new Intl.DateTimeFormat('id-ID', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Jakarta' }).format(new Date(value)) + ' WIB' }
-const auditBefore = computed(() => auditFields(auditDetail.value?.before))
-const auditAfter = computed(() => auditFields(auditDetail.value?.after))
 
 async function runAction() {
   if (page.value === 'imports') {
@@ -903,36 +839,11 @@ async function runAction() {
   modal.value = page.value === 'accounts' ? 'account' : page.value === 'users' ? 'user' : 'batch'
 }
 
-function onFile(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0]
-  if (file) { importError.value = ''; importErrors.value = []; fileToUpload.value = file; selectedFile.value = file.name; importStage.value = 3 }
-}
+const { onFile, clearImportFile, changeImportBatch, uploadImport } = useImportWorkflow({
+  selectedBatchId: selectedBatchID, source: importSource, selectedFile, file: fileToUpload, stage: importStage,
+  busy, error: importError, errors: importErrors, showError: showImportError, loadImports, loadWorkspace, showSuccess,
+})
 
-function clearImportFile() {
-  importError.value = ''; importErrors.value = []
-  fileToUpload.value = null
-  selectedFile.value = ''
-  importStage.value = selectedBatchID.value ? 2 : 1
-  const input = document.getElementById('file-input') as HTMLInputElement | null
-  if (input) input.value = ''
-}
-
-function changeImportBatch() {
-  importStage.value = selectedBatchID.value ? (fileToUpload.value ? 3 : 2) : 1
-  void loadImports()
-}
-
-async function downloadReport() {
-  const params = new URLSearchParams()
-  if (reportFrom.value) params.set('from', reportFrom.value)
-  if (reportTo.value) params.set('to', reportTo.value)
-  if (reportAccountID.value) params.set('account_id', reportAccountID.value)
-  if (reportQuery.value.trim()) params.set('q', reportQuery.value.trim())
-  if (reportStatus.value) params.set('status', reportStatus.value)
-  params.set('type', reportExportType.value)
-  try { await downloadFile(`/api/v1/reports/reconciliations/export?${params}`, `reconx-${reportExportType.value}.csv`) }
-  catch (error) { showToast(error instanceof Error ? error.message : 'Gagal mengunduh laporan.') }
-}
 async function downloadImportErrors(item: Record<string, any>) {
   try { await downloadFile(`/api/v1/imports/${item.id}/errors`, `${item.original_name}.errors.csv`) }
   catch (error) { showToast(error instanceof Error ? error.message : 'Laporan error tidak dapat diunduh.') }
@@ -978,71 +889,7 @@ async function submitModal() {
   finally { busy.value = false }
 }
 
-async function uploadImport() {
-  if (!fileToUpload.value || !selectedBatchID.value) { importError.value = 'Pilih batch dan file CSV terlebih dahulu.'; showImportError.value = true; return }
-  importError.value = ''; importErrors.value = []
-  if (!fileToUpload.value.name.toLowerCase().endsWith('.csv')) { importError.value = 'Format file tidak didukung. Simpan file Excel sebagai CSV UTF-8 terlebih dahulu.'; showImportError.value = true; return }
-  if (fileToUpload.value.size > 10 * 1024 * 1024) { importError.value = 'Ukuran file melebihi batas 10 MB.'; showImportError.value = true; return }
-  const form = new FormData(); form.set('file', fileToUpload.value); form.set('source_type', importSource.value)
-  importStage.value = 3
-  busy.value = true
-  try {
-    await apiRequest(`/api/v1/batches/${selectedBatchID.value}/imports`, { method: 'POST', idempotent: true, body: form })
-    clearImportFile(); importStage.value = 4; await loadWorkspace(); await loadImports(); showSuccess('CSV tervalidasi dan diimpor.')
-  } catch (error) {
-    const data = error instanceof ApiError ? error.data as { errors?: { line: number; field: string; message: string }[] } | undefined : undefined
-    importErrors.value = data?.errors ?? []
-    importError.value = importErrors.value.length ? 'Data dalam file belum lolos validasi. Periksa rincian berikut.' : error instanceof Error ? error.message : 'Import gagal. Periksa format file dan coba lagi.'
-    importStage.value = 2
-    await loadImports()
-    showImportError.value = true
-  } finally { busy.value = false }
-}
-
-function importValidationMessage(message: string) {
-  const translations: Record<string, string> = {
-    'Reference cannot be empty': 'Reference tidak boleh kosong.',
-    'Date must use YYYY-MM-DD': 'Tanggal harus menggunakan format YYYY-MM-DD.',
-    'Date falls outside the batch period': 'Tanggal berada di luar periode batch.',
-    'Direction must be CREDIT or DEBIT': 'Arah transaksi harus CREDIT atau DEBIT.',
-    'Amount must be a positive integer in rupiah': 'Nominal harus berupa bilangan bulat positif dalam rupiah.',
-    'Currency must be IDR': 'Mata uang harus IDR.',
-    'Column count does not match header': 'Jumlah kolom tidak sesuai dengan header.',
-    'CSV row format is invalid': 'Format baris CSV tidak valid.',
-    'CSV must contain at least one transaction': 'File harus berisi minimal satu transaksi.',
-  }
-  return translations[message] ?? message
-}
-
-async function runMatching(batchID: string) {
-  if (!batchID || busy.value) return
-  selectedBatchID.value = batchID
-  busy.value = true
-  try {
-    const { data: batch } = await apiRequest<Record<string, any>>(`/api/v1/batches/${batchID}`)
-    const { data: started } = await apiRequest<Record<string, any>>(`/api/v1/batches/${batchID}/match-runs`, { method: 'POST', idempotent: true, headers: { 'If-Match': `"${batch.row_version}"` }, body: '{}' })
-    matchingProgress.value = 'PROCESSING'
-    const deadline = Date.now() + 30 * 60 * 1000
-    let completed: Record<string, any> | null = null
-    while (Date.now() < deadline) {
-      await new Promise(resolve => window.setTimeout(resolve, 750))
-      try {
-        const { data } = await apiRequest<Record<string, any>>(`/api/v1/batches/${batchID}/match-runs/latest`)
-        if (data.id === started.id) {
-          matchingProgress.value = data.state
-          if (data.state === 'SUCCEEDED' || data.state === 'FAILED') { completed = data; break }
-        }
-      } catch { /* Keep polling through temporary request failures. */ }
-    }
-    await loadWorkspace()
-    await loadMatchingBatchOptions()
-    selectedBatchID.value = batchID
-    if (!completed) showToast('Matching masih berjalan. Periksa kembali hasil batch sebentar lagi.')
-    else if (completed.state === 'SUCCEEDED') showSuccess(`Matching selesai: ${completed.matched_pairs} pasangan cocok, ${completed.exceptions} exception.`)
-    else showToast('Matching gagal. Periksa status batch sebelum mencoba lagi.')
-  } catch (error) { showToast(error instanceof Error ? error.message : 'Matching gagal.') }
-  finally { matchingProgress.value = ''; busy.value = false }
-}
+const { runMatching } = useMatchingWorkflow({ selectedBatchId: selectedBatchID, busy, progress: matchingProgress, loadWorkspace, loadMatchingBatchOptions, showToast, showSuccess })
 
 const exceptionDetail = ref<Record<string, any> | null>(null)
 const exceptionOperators = ref<{ id: string; full_name: string }[]>([])
@@ -1056,7 +903,7 @@ const exceptionTypeCounts = computed(() => exceptionSummaryCounts.value)
 async function loadExceptionDetail() {
   if (!selectedExceptionID.value) { exceptionDetail.value = null; return }
   try {
-    exceptionDetail.value = (await apiRequest<Record<string, any>>(`/api/v1/exceptions/${selectedExceptionID.value}`)).data
+    exceptionDetail.value = (await fetchException(selectedExceptionID.value)).data
     assignmentTarget.value = exceptionDetail.value?.assigned_to || currentUser.value?.id || ''
     if (exceptionDetail.value?.can_assign_others && currentUser.value?.role === 'OPERATOR') await loadExceptionOperators()
   } catch (error) { exceptionDetail.value = null; showToast(error instanceof Error ? error.message : 'Exception tidak dapat dibuka.') }
@@ -1079,80 +926,23 @@ async function openExceptionBatch() {
     await openBatchPopup(batchID)
   } catch (error) { showToast(error instanceof Error ? error.message : 'Batch tidak dapat dibuka.') }
 }
-function openBatchApproval(row: Row) {
-  selectedApprovalID.value = row.id || ''
-  decisionComment.value = ''
-  modal.value = 'approval'
-}
-async function assignException() {
-  if (!selectedExceptionID.value) return
-  const assigneeID = assignmentTarget.value || currentUser.value?.id || ''
-  if (!assigneeID) { showToast('Pilih Operator terlebih dahulu.'); return }
-  try { await apiRequest(`/api/v1/exceptions/${selectedExceptionID.value}/actions`, { method: 'POST', body: JSON.stringify({ type: 'ASSIGN', assignee_id: assigneeID, note: '' }) }); await loadWorkspace(); await loadExceptionDetail(); showSuccess(assigneeID === currentUser.value?.id ? 'Exception ditugaskan ke Anda.' : 'Exception berhasil ditugaskan.') }
-  catch (error) { showToast(error instanceof Error ? error.message : 'Aksi gagal.') }
-}
-async function addExceptionNote() {
-  if (!selectedExceptionID.value || !investigationNote.value.trim()) return
+async function openApproval(id: string) {
   try {
-    await apiRequest(`/api/v1/exceptions/${selectedExceptionID.value}/actions`, { method: 'POST', body: JSON.stringify({ type: 'NOTE', note: investigationNote.value.trim() }) })
-    investigationNote.value = ''; await loadWorkspace(); await loadExceptionDetail(); showSuccess('Catatan investigation disimpan.')
-  } catch (error) { showToast(error instanceof Error ? error.message : 'Catatan gagal disimpan.') }
+    const { data } = await fetchApproval(id)
+    const index = rawApprovals.value.findIndex(item => item.id === id)
+    if (index >= 0) rawApprovals.value.splice(index, 1, data); else rawApprovals.value.unshift(data)
+    selectedApprovalID.value = id
+    decisionComment.value = ''
+    modal.value = 'approval'
+  } catch (error) { showToast(error instanceof Error ? error.message : 'Approval tidak dapat dibuka.') }
 }
-function onEvidenceFile(event: Event) {
-  evidenceFile.value = (event.target as HTMLInputElement).files?.[0] ?? null
-}
-function chooseEvidenceFile() {
-  const scope = detailPopup.value === 'exception' ? document.querySelector('.detail-popup') : document
-  scope?.querySelector<HTMLInputElement>('#exception-evidence-input')?.click()
-}
-async function uploadExceptionEvidence() {
-  if (!selectedExceptionID.value || !evidenceFile.value) { showToast('Pilih file evidence terlebih dahulu.'); return }
-  if (evidenceFile.value.size > 5 * 1024 * 1024) { showToast('Ukuran evidence maksimal 5 MB.'); return }
-  const form = new FormData()
-  form.set('file', evidenceFile.value)
-  try {
-    await apiRequest(`/api/v1/exceptions/${selectedExceptionID.value}/evidence`, { method: 'POST', idempotent: true, body: form })
-    evidenceFile.value = null
-    await loadWorkspace()
-    await loadExceptionDetail()
-    showSuccess('Evidence tersimpan di penyimpanan private.')
-  } catch (error) { showToast(error instanceof Error ? error.message : 'Evidence gagal diunggah.') }
-}
-async function downloadExceptionEvidence(action: Record<string, any>) {
-  try { await downloadFile(`/api/v1/exceptions/${selectedExceptionID.value}/evidence/${action.evidence_id}`, action.file_name || 'evidence') }
-  catch (error) { showToast(error instanceof Error ? error.message : 'Evidence tidak dapat diunduh.') }
-}
-async function submitBatch() {
-  if (!selectedBatchID.value) { showToast('Pilih batch terlebih dahulu.'); return }
-  busy.value = true
-  try {
-    const { data: batch } = await apiRequest<Record<string, any>>(`/api/v1/batches/${selectedBatchID.value}`)
-    await apiRequest(`/api/v1/batches/${selectedBatchID.value}/submit`, { method: 'POST', idempotent: true, headers: { 'If-Match': `"${batch.row_version}"` }, body: '{}' })
-    await loadWorkspace(); showSuccess('Batch dikirim ke antrean approval.')
-  } catch (error) { showToast(error instanceof Error ? error.message : 'Batch belum dapat diajukan.') }
-  finally { busy.value = false }
-}
-async function closeBatch() {
-  if (!selectedBatchID.value) return
-  if (!window.confirm('Tutup batch yang sudah disetujui? Hasilnya akan dikunci dan tidak dapat diubah.')) return
-  busy.value = true
-  try {
-    const { data: batch } = await apiRequest<Record<string, any>>(`/api/v1/batches/${selectedBatchID.value}`)
-    await apiRequest(`/api/v1/batches/${selectedBatchID.value}/close`, { method: 'POST', idempotent: true, headers: { 'If-Match': `"${batch.row_version}"` }, body: '{}' })
-    await loadWorkspace(); showSuccess('Batch berhasil ditutup dan dikunci.')
-  } catch (error) { showToast(error instanceof Error ? error.message : 'Batch belum dapat ditutup.') }
-  finally { busy.value = false }
-}
-async function transitionBatch(action: 'cancel' | 'reopen' | 'retry') {
-  if (!selectedBatchID.value) return
-  busy.value = true
-  try {
-    const { data: batch } = await apiRequest<Record<string, any>>(`/api/v1/batches/${selectedBatchID.value}`)
-    await apiRequest(`/api/v1/batches/${selectedBatchID.value}/${action}`, { method: 'POST', idempotent: true, headers: { 'If-Match': `"${batch.row_version}"` }, body: '{}' })
-    await loadWorkspace(); showSuccess(action === 'cancel' ? 'Batch dibatalkan.' : action === 'reopen' ? 'Batch dibuka untuk koreksi dan import ulang.' : 'Batch siap dicoba kembali.')
-  } catch (error) { showToast(error instanceof Error ? error.message : 'Perubahan state batch gagal.') }
-  finally { busy.value = false }
-}
+async function openBatchApproval(row: Row) { if (row.id) await openApproval(row.id) }
+const { assignException, addExceptionNote, onEvidenceFile, chooseEvidenceFile, uploadExceptionEvidence, downloadExceptionEvidence } = useExceptionActions({
+  id: selectedExceptionID, assignmentTarget, currentUser, note: investigationNote, evidenceFile, detailPopup,
+  loadWorkspace, loadDetail: loadExceptionDetail, showSuccess, showToast,
+})
+const { submitBatch, closeBatch, transitionBatch } = useBatchWorkflow({ selectedBatchId: selectedBatchID, busy, loadWorkspace, showToast, showSuccess })
+
 function editBatch() {
   const batch = selectedBatch.value
   if (!batch) return
@@ -1259,11 +1049,7 @@ async function openNotification(item: Record<string, any>) {
     await loadExceptionDetail()
   } else if (item.target_entity === 'approval') {
     if (['CHECKER', 'AUDITOR'].includes(currentUser.value?.role ?? '')) {
-      try { rawApprovals.value = (await apiRequest<Record<string, any>[]>('/api/v1/approvals')).data }
-      catch (error) { showToast(error instanceof Error ? error.message : 'Approval tidak dapat dibuka.'); return }
-      selectedApprovalID.value = item.target_entity_id
-      decisionComment.value = ''
-      modal.value = 'approval'
+      await openApproval(item.target_entity_id)
     } else {
       navigate('batches')
     }
@@ -1276,13 +1062,7 @@ async function openNotification(item: Record<string, any>) {
   }
 }
 
-function badgeClass(value: string) {
-  const v = value.toLowerCase()
-  if (v.includes('completed') || (v.includes('matched') && !v.includes('unmatched')) || v.includes('aktif') || v.includes('success') || v.includes('disetujui')) return 'badge success'
-  if (v.includes('progress') || v.includes('review') || v.includes('menunggu') || v.includes('open')) return 'badge warning'
-  if (v.includes('unmatched') || v.includes('only') || v.includes('mismatch') || v.includes('ditolak') || v.includes('failed')) return 'badge danger'
-  return 'badge neutral'
-}
+
 </script>
 
 <template>
@@ -1335,55 +1115,13 @@ function badgeClass(value: string) {
       <div class="content-area">
         <div class="page-header"><div><div class="breadcrumb-mobile">Workspace <span>/</span> {{ currentTitle }}</div><h1>{{ currentTitle }}</h1><p>{{ subtitles[page] }}</p></div><div class="header-actions"><div v-if="page === 'dashboard'" class="dashboard-filter-controls"><input v-model="dashboardFrom" aria-label="Dari tanggal" type="date" /><input v-model="dashboardTo" aria-label="Sampai tanggal" type="date" /><GlobalDropdown v-model="dashboardAccountID" aria-label="Rekening"><option value="">Semua rekening</option><option v-for="account in rawAccounts" :key="account.id" :value="account.id">{{ account.account_code }}</option></GlobalDropdown><button class="button secondary" data-loading @click="loadDashboard">Terapkan</button></div><button v-if="pageAction" class="button primary" data-loading @click="runAction"><span class="button-plus">＋</span>{{ pageAction }}</button></div></div>
 
-        <section v-if="page === 'dashboard'" class="dashboard-page"><p v-if="dashboardLoading" class="table-state">Memuat ringkasan…</p><p v-else-if="dashboardForbidden" class="table-state error-state">Akses dashboard tidak diizinkan.</p><p v-else-if="dashboardError" class="table-state error-state">{{ dashboardError }} <button class="button secondary" @click="loadDashboard">Coba lagi</button></p>
-          <div class="kpi-grid">
-            <article class="kpi-card"><div class="kpi-top"><span>Total Batch</span><span class="kpi-icon teal">▦</span></div><strong>{{ dashboardSummary.total_batches ?? 0 }}</strong><small class="trend neutral-text">{{ dashboardSummary.active_batches ?? 0 }} masih aktif</small></article>
-            <article class="kpi-card"><div class="kpi-top"><span>Matched Pairs</span><span class="kpi-icon green">✓</span></div><strong>{{ dashboardSummary.matched_pairs ?? 0 }}</strong><small class="trend positive">{{ Number(dashboardSummary.match_rate ?? 0).toFixed(1) }}% dari transaksi internal</small></article>
-            <article class="kpi-card"><div class="kpi-top"><span>Exceptions Aktif</span><span class="kpi-icon amber">⚑</span></div><strong>{{ dashboardSummary.open_exceptions ?? 0 }}</strong><small class="trend warning-text">{{ dashboardSummary.exceptions_older_24h ?? 0 }} lebih dari 24 jam</small></article>
-            <article class="kpi-card"><div class="kpi-top"><span>Approval Menunggu</span><span class="kpi-icon blue">◷</span></div><strong>{{ dashboardSummary.pending_approvals ?? 0 }}</strong><small class="trend neutral-text">Perlu tindakan Checker</small></article>
-          </div>
-          <div class="dashboard-insights">
-            <article class="panel dashboard-chart-panel"><div class="panel-heading"><div><h2>Tren Rekonsiliasi</h2><p>Transaksi internal per tanggal pada filter terpilih</p></div></div><div v-if="trendChart.points.length" class="trend-line-chart"><div class="trend-chart-scale"><span>{{ trendChart.maximum }}</span><span>0</span></div><div class="trend-chart-main"><svg viewBox="0 0 1000 180" preserveAspectRatio="none" role="img" aria-label="Tren transaksi matched dan unmatched"><line v-for="y in [20, 90, 160]" :key="y" x1="30" x2="970" :y1="y" :y2="y" class="trend-grid-line"/><polyline v-if="trendChart.points.length > 1" :points="trendChart.matched" class="trend-line matched"/><polyline v-if="trendChart.points.length > 1" :points="trendChart.unmatched" class="trend-line unmatched"/><g v-for="point in trendChart.points" :key="point.date"><circle :cx="point.x" :cy="point.matchedY" r="5" class="trend-dot matched"><title>{{ point.label }}: {{ point.matched_count }} matched</title></circle><circle :cx="point.x" :cy="point.unmatchedY" r="5" class="trend-dot unmatched"><title>{{ point.label }}: {{ point.unmatched_count }} unmatched</title></circle></g></svg><div class="trend-axis"><span v-for="point in trendChart.ticks" :key="point!.date">{{ point!.label }}</span></div></div></div><p v-else class="chart-empty">Belum ada transaksi pada periode ini.</p><div class="chart-legend"><span><i class="trend-matched"></i>Matched internal</span><span><i class="trend-unmatched"></i>Unmatched internal</span></div></article>
-            <article class="panel dashboard-distribution"><div class="panel-heading"><div><h2>Status Batch</h2><p>Jumlah batch sesuai filter</p></div></div><div v-if="statusChart.total" class="status-chart"><div class="status-donut" :style="{ background: statusChart.background }" role="img" :aria-label="`Total ${statusChart.total} batch berdasarkan status`"><div><strong>{{ statusChart.total }}</strong><span>Batch</span></div></div><div class="status-legend"><div v-for="item in statusChart.segments" :key="item.name" class="status-legend-row"><i :style="{ background: item.color }"></i><span>{{ item.name.split('_').join(' ') }}</span><b>{{ item.count }}</b></div></div></div><p v-else class="chart-empty">Belum ada batch.</p></article>
-            <article class="panel dashboard-distribution"><div class="panel-heading"><div><h2>Top Selisih</h2><p>Exception yang masih aktif</p></div></div><div v-if="exceptionChart.length" class="exception-chart"><div v-for="item in exceptionChart" :key="item.name" class="exception-chart-row"><div><span>{{ item.name.split('_').join(' ') }}</span><b>{{ item.count }}</b></div><div class="exception-chart-track"><i :style="{ width: item.width }"></i></div></div></div><p v-else class="chart-empty">Belum ada exception aktif.</p></article>
-          </div><article class="panel table-panel recent-panel"><div class="panel-heading"><div><h2>Batch Rekonsiliasi</h2><p>Status dan ringkasan dari database workspace</p></div><button class="link-button" @click="navigate('batches')">Lihat semua batch <span>→</span></button></div><DataTable :columns="tableConfig.batches!.columns" :rows="batchRows.slice(0, 6)" @open="openTableRow" /></article>
-          <div class="bottom-grid"><article class="panel process-panel"><div class="panel-heading"><div><h2>Alur Proses</h2><p>Batch berjalan melalui state machine yang tervalidasi di server</p></div></div><div class="process-flow"><div v-for="(step, i) in [{icon:'▱',title:'Buat Batch',text:'Pilih rekening & periode'}, {icon:'⇧',title:'Import Data',text:'Unggah dua CSV'}, {icon:'⇄',title:'Matching',text:'Pencocokan exact'}, {icon:'⌕',title:'Investigasi',text:'Tinjau exception'}, {icon:'✓',title:'Approval',text:'Pemeriksaan Checker'}, {icon:'▥',title:'Tutup Batch',text:'Kunci hasil disetujui'}]" :key="step.title" class="process-step"><span class="process-icon">{{ step.icon }}</span><div><b>{{ i + 1 }}. {{ step.title }}</b><small>{{ step.text }}</small></div><span v-if="i < 5" class="process-arrow">→</span></div></div></article></div>
-        </section>
+        <DashboardView v-if="page === 'dashboard'" :summary="dashboardSummary" :loading="dashboardLoading" :forbidden="dashboardForbidden" :error="dashboardError" :rows="batchRows" :columns="tableConfig.batches!.columns" @reload="loadDashboard" @view-batches="navigate('batches')" @open="openTableRow" />
 
-        <section v-else-if="page === 'imports'" class="page-grid import-layout">
-          <article class="panel import-card"><div class="panel-heading"><div><h2>Unggah File Transaksi</h2><p>CSV divalidasi seluruhnya sebelum transaksi disimpan.</p></div><span class="step-count">CSV · 10 MB maks.</span></div>
-            <ol class="import-stepper" aria-label="Tahapan import">
-              <li v-for="(step, index) in ['Pilih batch', 'Pilih file', 'Validasi & import', 'Selesai']" :key="step" :class="{ active: importStage === index + 1, complete: importStage > index + 1 }"><span>{{ importStage > index + 1 ? '✓' : index + 1 }}</span><b>{{ step }}</b></li>
-            </ol>
-            <div class="upload-grid"><button class="drop-zone" @click="openFilePicker"><span class="upload-cloud">⇧</span><b>{{ selectedFile || 'Pilih file CSV' }}</b><small>Kolom wajib: reference_id, date, direction, amount, currency</small><span class="button primary small-button">Pilih File</span><small class="format-note">Data ditolak seluruhnya bila ada baris tidak valid.</small></button>
-              <div class="upload-side"><div class="field-label">Sumber Data</div><GlobalDropdown v-model="importSource" class="form-control"><option value="INTERNAL">INTERNAL · Catatan perusahaan</option><option value="BANK">BANK · Mutasi bank</option></GlobalDropdown><div class="field-label spaced">Batch Rekonsiliasi</div><GlobalDropdown v-model="selectedBatchID" @change="changeImportBatch" class="form-control"><option value="" disabled>Pilih batch draft</option><option v-for="batch in rawBatches.filter(item => item.state === 'DRAFT')" :key="batch.id" :value="batch.id">{{ batch.batch_no }} · {{ formatDate(batch.period_from) }}</option></GlobalDropdown><div class="check-note"><span>✓</span><div><b>Validasi sebelum disimpan</b><small>Periksa batch, sumber, dan format file sebelum mengimpor transaksi.</small></div></div></div></div>
-            <section class="import-guide"><h3>Format file untuk import</h3><p>Siapkan data di Excel, lalu pilih <b>Save As → CSV UTF-8 (Comma delimited) (*.csv)</b>. File .xlsx belum dapat diunggah langsung. Gunakan koma sebagai pemisah kolom.</p><p>Contoh referensi ganda untuk menguji ambiguous match: <a href="/contoh/internal-ambiguous.csv" download>Unduh CSV internal</a> · <a href="/contoh/bank-ambiguous.csv" download>Unduh CSV bank</a>. Sesuaikan tanggal dengan periode batch.</p><p>Baris pertama wajib berisi nama kolom berikut:</p><pre>reference_id,date,direction,amount,currency
-TRX001,2026-01-15,DEBIT,150000,IDR
-TRX002,2026-01-15,CREDIT,250000,IDR</pre><ul><li><b>reference_id:</b> wajib diisi; referensi ganda dapat menghasilkan exception ambiguous match.</li><li><b>date:</b> format YYYY-MM-DD dan harus berada dalam periode batch.</li><li><b>direction:</b> DEBIT atau CREDIT.</li><li><b>amount:</b> bilangan bulat positif dalam rupiah, tanpa titik, koma, atau simbol mata uang.</li><li><b>currency:</b> IDR. Maksimal 50.000 baris dan 10 MB.</li></ul><a class="link-button" download="template-transaksi-reconx.csv" href="data:text/csv;charset=utf-8,reference_id%2Cdate%2Cdirection%2Camount%2Ccurrency%0ATRX001%2C2026-01-15%2CDEBIT%2C150000%2CIDR%0A">Unduh contoh CSV</a></section>
-            <input id="file-input" class="hidden-input" type="file" accept=".csv,text/csv" @change="onFile" /><div class="import-actions"><button class="button secondary" data-no-loading @click="clearImportFile">Batal</button><button class="button primary" :disabled="!fileToUpload || busy" @click="uploadImport">{{ busy ? 'Memproses…' : 'Validasi & Import' }} <span>→</span></button></div>
-          </article>
-          <article class="panel history-card"><div class="panel-heading"><div><h2>Riwayat Import</h2><p>File yang pernah diunggah untuk batch terpilih.</p></div></div><div v-for="item in rawImports" :key="item.id" class="import-history-entry"><div class="import-history-info"><strong>{{ item.original_name }}</strong><div class="import-history-meta"><span>{{ item.source_type }}</span><span :class="['import-history-status', item.state === 'VALID' ? 'valid' : 'invalid']">{{ item.state === 'VALID' ? 'Berhasil' : item.state === 'INVALID' ? 'Gagal' : item.state }}</span><span>{{ item.rows_count }} baris</span></div><small>{{ formatDate(item.created_at) }}</small></div><div class="import-history-actions"><button class="import-history-action" type="button" aria-label="Unduh file asli" title="Unduh file asli" @click="downloadOriginalImport(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v3h16v-3" /></svg></button><button v-if="item.has_error_report" class="import-history-action error" type="button" aria-label="Unduh laporan error" title="Unduh laporan error" @click="downloadImportErrors(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19L12 3Zm0 6v4m0 3h.01" /></svg></button></div></div><p v-if="!rawImports.length" class="login-footnote">Belum ada file pada batch terpilih.</p></article>
-        </section>
+        <ImportView v-else-if="page === 'imports'" v-model:source="importSource" v-model:batch-id="selectedBatchID" :import-stage="importStage" :selected-file="selectedFile" :batches="rawBatches" :imports="rawImports" :file-selected="!!fileToUpload" :busy="busy" @pick="openFilePicker" @change-batch="changeImportBatch" @file="onFile" @clear="clearImportFile" @upload="uploadImport" @download="downloadOriginalImport" @download-errors="downloadImportErrors" />
 
-        <section v-else-if="page === 'batchDetail'" class="detail-page batch-detail-page">
-          <button class="back-link" @click="navigate('batches')">Kembali ke daftar batch</button>
-          <div class="detail-title"><div><div class="title-line"><h2>{{ selectedBatch?.batch_no || 'Batch tidak dipilih' }}</h2><span class="badge" :class="badgeClass(selectedBatch?.state || '')">{{ selectedBatch?.state || '—' }}</span></div><p>{{ selectedBatch?.remarks || selectedBatch?.bank_display_name || 'Tanpa catatan' }} <span>·</span> {{ formatDate(selectedBatch?.period_from) }} – {{ formatDate(selectedBatch?.period_to) }} · {{ selectedBatch?.account_code }}</p></div><button v-if="currentUser?.role !== 'OPERATOR' || selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="openMatchingResults">Hasil Matching</button><button v-if="selectedBatch?.state === 'DRAFT' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="openBatchEditor">Edit Batch</button><button v-if="selectedBatch?.state === 'DRAFT' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="transitionBatch('cancel')">Batalkan</button><button v-if="selectedBatch?.state === 'REVIEW' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="transitionBatch('reopen')">Koreksi Sumber</button><button v-if="selectedBatch?.state === 'REVIEW' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="submitBatch">Ajukan Approval</button><button v-if="selectedBatch?.state === 'FAILED' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="transitionBatch('retry')">Coba Matching Lagi</button><button v-if="selectedBatch?.state === 'APPROVED' && currentUser?.role === 'CHECKER'" class="button primary" :disabled="busy" @click="closeBatch">Tutup Batch</button></div>
-          <div class="kpi-grid detail-kpis"><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Transaksi Internal</span><span class="detail-metric-icon teal">↗</span></div><strong>{{ selectedBatch?.internal_count ?? 0 }}</strong><small>Data dari internal</small></article><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Transaksi Bank</span><span class="detail-metric-icon blue">↙</span></div><strong>{{ selectedBatch?.bank_count ?? 0 }}</strong><small>Data dari bank</small></article><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Matched</span><span class="detail-metric-icon green">✓</span></div><strong>{{ selectedBatch?.matched_pairs ?? 0 }}</strong><small>Pasangan transaksi</small></article><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Exceptions Aktif</span><span class="detail-metric-icon amber">!</span></div><strong>{{ selectedBatch?.active_exceptions ?? 0 }}</strong><small>Memerlukan tindak lanjut</small></article></div>
-          <article class="panel detail-tabs"><div class="tabs"><button v-for="tab in batchTabs" :key="tab" :class="{ selected: activeTab === tab }" @click="activeTab = tab">{{ tab }}</button></div><div v-if="activeTab === 'Ringkasan'" class="detail-summary"><div><h3>Ringkasan</h3><p>Ringkasan hasil rekonsiliasi untuk batch ini.</p><div class="match-progress"><span>Matched</span><div><i :style="{ width: `${selectedBatch?.internal_count ? selectedBatch.matched_pairs * 100 / selectedBatch.internal_count : 0}%` }"></i></div><b>{{ selectedBatch?.matched_pairs ?? 0 }} pasangan</b></div><div class="match-progress unmatched-progress"><span>Exceptions</span><div><i :style="{ width: `${selectedBatch?.internal_count ? selectedBatch.active_exceptions * 100 / selectedBatch.internal_count : 0}%` }"></i></div><b>{{ selectedBatch?.active_exceptions ?? 0 }} aktif</b></div></div><div class="batch-state"><span class="state-check">!</span><b>{{ selectedBatch?.state === 'CLOSED' ? 'Batch ditutup' : selectedBatch?.state === 'CANCELLED' ? 'Batch dibatalkan' : selectedBatch?.state === 'DRAFT' ? 'Batch masih dalam persiapan' : selectedBatch?.state === 'PENDING_APPROVAL' ? 'Menunggu persetujuan' : selectedBatch?.state === 'APPROVED' ? 'Siap ditutup' : selectedBatch?.active_exceptions ? 'Belum dapat ditutup' : 'Periksa status batch' }}</b><small>{{ selectedBatch?.state === 'CANCELLED' ? 'Batch ini telah dibatalkan.' : selectedBatch?.state === 'CLOSED' ? 'Hasil rekonsiliasi telah dikunci.' : 'Batch dapat diajukan setelah seluruh data cocok dan tidak ada exception atau approval tertunda.' }}</small></div></div><div v-else-if="activeTab === 'Imports'"><div v-for="item in rawImports" :key="item.id" class="history-item"><span class="file-icon">CSV</span><span class="file-info"><b>{{ item.original_name }}</b><small>{{ item.source_type }} · {{ item.state }} · {{ item.rows_count }} baris · {{ formatDate(item.created_at) }}</small></span><button class="link-button" @click="downloadOriginalImport(item)">File</button><button v-if="item.has_error_report" class="link-button" @click="downloadImportErrors(item)">Unduh Error</button></div><div v-if="!rawImports.length" class="detail-empty"><span class="detail-empty-icon">⇧</span><strong>Belum ada file import</strong><p>File yang diunggah untuk batch ini akan ditampilkan di sini.</p></div></div><div v-else-if="activeTab === 'Detail Transaksi'"><DataTable :columns="[{ key: 'ref', label: 'Reference' }, { key: 'date', label: 'Tanggal' }, { key: 'source', label: 'Sumber' }, { key: 'description', label: 'Arah' }, { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Kredit' }, { key: 'status', label: 'Status' }]" :rows="batchTransactionRows" @open="openTransaction" /></div><div v-else-if="activeTab === 'Matching Results'"><DataTable :columns="tableConfig.matching!.columns" :rows="matchingRows" /></div><div v-else-if="activeTab === 'Exceptions'"><DataTable :columns="tableConfig.exceptions!.columns" :rows="batchExceptionRows" link-key="ref" @open="openBatchException" /></div><div v-else-if="activeTab === 'Approvals'"><DataTable :columns="tableConfig.approvals!.columns" :rows="batchApprovalRows" @open="openBatchApproval" /></div><div v-else><DataTable :columns="tableConfig.audit!.columns" :rows="batchAuditRows" /></div></article>
-        </section>
+        <div v-else-if="page === 'batchDetail' || page === 'exceptionDetail'" aria-hidden="true"></div>
 
-        <section v-else-if="page === 'exceptionDetail'" class="detail-page exception-detail-page"><button class="back-link" @click="navigate('exceptions')">Kembali ke Exceptions</button>
-          <div class="detail-title"><div><div class="title-line"><h2>{{ exceptionDetail?.reference_id || 'Exception' }}</h2><span class="badge warning">{{ exceptionDetail?.type || '—' }}</span></div><p>{{ exceptionDetail?.batch_no }} <span>·</span> {{ exceptionDetail?.state }} <span>·</span> PIC: {{ exceptionDetail?.assignee_name || 'Belum ditugaskan' }}</p></div><button v-if="exceptionDetail?.batch_id" class="button secondary" data-loading @click="openExceptionBatch">Lihat batch</button><div v-if="currentUser?.role === 'OPERATOR' && exceptionDetail?.can_assign_others && ['OPEN','INVESTIGATING'].includes(exceptionDetail?.state)" class="exception-assignment"><input v-model="operatorSearch" class="form-control" aria-label="Cari operator" placeholder="Cari nama Operator" /><GlobalDropdown v-model="assignmentTarget" class="form-control" aria-label="Pilih penanggung jawab"><option :value="currentUser?.id || ''">Saya · {{ currentUser?.full_name }}</option><option v-for="operator in exceptionOperators.filter(item => item.id !== currentUser?.id)" :key="operator.id" :value="operator.id">{{ operator.full_name }}</option></GlobalDropdown><button class="button secondary" :disabled="!assignmentTarget" @click="assignException">Tugaskan</button></div><button v-if="exceptionDetail?.type === 'DATE_VARIANCE' && currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING'].includes(exceptionDetail?.state)" class="button primary" data-loading @click="modal = 'proposal'">Ajukan Manual Match</button></div>
-          <div class="comparison-grid"><article class="panel"><div class="panel-heading"><div><h2>Data Internal</h2><p>{{ exceptionDetail?.internal?.source_type || 'INTERNAL' }}</p></div></div><div class="data-pair"><span>Reference ID</span><b>{{ exceptionDetail?.internal?.reference_id || '—' }}</b></div><div class="data-pair"><span>Tanggal</span><b>{{ formatDate(exceptionDetail?.internal?.date) }}</b></div><div class="data-pair"><span>Arah</span><b>{{ exceptionDetail?.internal?.direction || '—' }}</b></div><div class="data-pair"><span>Nominal</span><b>{{ money(exceptionDetail?.internal?.amount_rupiah) }}</b></div></article><article class="panel"><div class="panel-heading"><div><h2>Data Bank</h2><p>{{ exceptionDetail?.bank?.source_type || 'BANK' }}</p></div></div><div class="data-pair"><span>Reference ID</span><b>{{ exceptionDetail?.bank?.reference_id || '—' }}</b></div><div class="data-pair"><span>Tanggal</span><b>{{ formatDate(exceptionDetail?.bank?.date) }}</b></div><div class="data-pair"><span>Arah</span><b>{{ exceptionDetail?.bank?.direction || '—' }}</b></div><div class="data-pair mismatch"><span>Nominal</span><b>{{ money(exceptionDetail?.bank?.amount_rupiah) }}</b></div></article></div><article v-if="exceptionDetail?.type === 'AMBIGUOUS_MATCH'" class="panel ambiguity-panel"><h3>Transaksi dengan reference yang sama</h3><p>Reference ini muncul lebih dari sekali. Pilihannya perlu diperiksa dan sumber diperbaiki sebelum batch diajukan.</p><div class="candidate-table-wrap"><table class="candidate-table"><thead><tr><th>Sumber</th><th>Referensi</th><th>Tanggal</th><th>Arah</th><th>Nominal</th><th>Mata uang</th></tr></thead><tbody><tr v-for="candidate in exceptionDetail.candidates || []" :key="candidate.id"><td>{{ candidate.source_type }}</td><td>{{ candidate.reference_id }}</td><td>{{ formatDate(candidate.date) }}</td><td>{{ candidate.direction }}</td><td>{{ money(candidate.amount_rupiah) }}</td><td>{{ candidate.currency }}</td></tr></tbody></table></div><p v-if="!exceptionDetail.candidates?.length">Tidak ada kandidat yang tersedia.</p></article>
-          <article class="panel timeline-panel"><div class="panel-heading"><div><h2>Riwayat Pemeriksaan</h2><p>Catatan dan assignment exception</p></div></div><div class="timeline"><div v-for="action in exceptionDetail?.actions || []" :key="action.id"><i></i><span><b>{{ action.action_type }} · {{ action.actor_name }}</b><small>{{ action.note || 'Tidak ada catatan' }} · {{ formatDate(action.created_at) }}</small><button v-if="action.has_evidence" class="link-button" @click="downloadExceptionEvidence(action)">Unduh {{ action.file_name || 'evidence' }}</button></span></div><p v-if="!exceptionDetail?.actions?.length">Belum ada tindakan.</p></div><label v-if="currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING','PENDING_ACTION_APPROVAL'].includes(exceptionDetail?.state)" class="field-label">Catatan investigasi<textarea v-model="investigationNote" class="form-control" rows="2" placeholder="Catatan untuk audit trail"></textarea></label><button v-if="currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING','PENDING_ACTION_APPROVAL'].includes(exceptionDetail?.state)" class="button secondary" :disabled="!investigationNote.trim()" @click="addExceptionNote">Simpan Catatan</button><div v-if="currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING','PENDING_ACTION_APPROVAL'].includes(exceptionDetail?.state)" class="evidence-upload"><input id="exception-evidence-input" class="hidden-input" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain" @change="onEvidenceFile" /><span>{{ evidenceFile?.name || 'PDF, PNG, JPEG, TXT · maks. 5 MB' }}</span><button class="button secondary" @click="chooseEvidenceFile">Pilih Evidence</button><button class="button primary" :disabled="!evidenceFile" @click="uploadExceptionEvidence">Unggah</button></div></article>
-        </section>
-
-        <section v-else-if="page === 'reports'" class="reports-page">
-          <article class="panel report-filters"><div class="filter-block"><label>Mulai</label><input v-model="reportFrom" class="form-control" type="date" /></div><div class="filter-block"><label>Sampai</label><input v-model="reportTo" class="form-control" type="date" /></div><div class="filter-block"><label>Rekening</label><GlobalDropdown v-model="reportAccountID" class="form-control"><option value="">Semua rekening</option><option v-for="account in rawAccounts" :key="account.id" :value="account.id">{{ account.account_code }} · {{ account.bank_display_name }}</option></GlobalDropdown></div><div class="filter-block"><label>Cari batch</label><input v-model="reportQuery" class="form-control" placeholder="No. batch / rekening" /></div><div class="filter-block"><label>Status batch</label><GlobalDropdown v-model="reportStatus" class="form-control"><option value="">Semua status</option><option v-for="status in currentStatusOptionsForReport" :key="status" :value="status">{{ status }}</option></GlobalDropdown></div><div class="report-export"><label>Jenis laporan</label><div><GlobalDropdown v-model="reportExportType" aria-label="Jenis laporan"><option value="batches">Ringkasan batch</option><option value="transactions">Transaksi</option><option value="exceptions">Riwayat exception</option></GlobalDropdown><button class="button secondary" data-loading @click="downloadReport">Unduh CSV</button></div></div></article>
-          <div class="report-summary-grid"><article v-for="card in [{label: 'Transaksi Internal', value: reportSummary.internal_count ?? 0, icon: '↗', tone: 'teal'}, {label: 'Transaksi Bank', value: reportSummary.bank_count ?? 0, icon: '↙', tone: 'blue'}, {label: 'Matched Pairs', value: reportSummary.matched_pairs ?? 0, icon: '✓', tone: 'teal'}, {label: 'Belum Cocok', value: reportSummary.unmatched_internal ?? 0, icon: '≠', tone: 'amber'}, {label: 'Exception Aktif', value: reportSummary.active_exceptions ?? 0, icon: '!', tone: 'orange'}, {label: 'Match Rate', value: `${Number(reportSummary.match_rate ?? 0).toFixed(1)}%`, icon: '%', tone: 'violet'}, {label: 'Rata-rata Matching', value: `${Number(reportSummary.average_match_seconds ?? 0).toFixed(1)} dtk`, icon: '◷', tone: 'slate'}]" :key="card.label" class="report-stat" :class="`tone-${card.tone}`"><div><span>{{ card.label }}</span><strong>{{ card.value }}</strong></div><span class="report-stat-icon">{{ card.icon }}</span></article></div>
-          <div class="report-chart-grid"><article class="panel report-chart"><div class="panel-heading"><div><h2>Status Batch</h2><p>Distribusi batch sesuai filter</p></div></div><div v-if="reportStatusChart.total" class="report-donut-layout"><div class="report-donut" :style="{ background: reportStatusChart.background }"><div><strong>{{ reportStatusChart.total }}</strong><span>Batch</span></div></div><div class="report-legend"><div v-for="item in reportStatusChart.segments" :key="item.name"><span><i :style="{background:item.color}"></i>{{ item.name.split('_').join(' ') }}</span><b>{{ item.count }}</b></div></div></div><p v-else class="report-empty">Belum ada batch pada filter ini.</p></article><article class="panel report-chart"><div class="panel-heading"><div><h2>Exception Aktif</h2><p>Jenis selisih pada batch terpilih</p></div></div><div v-if="reportExceptionChart.length" class="report-bars"><div v-for="item in reportExceptionChart" :key="item.name"><div><span>{{ item.name.split('_').join(' ') }}</span><b>{{ item.count }}</b></div><div class="report-bar-track"><i :style="{width:item.width}"></i></div></div></div><p v-else class="report-empty">Tidak ada exception aktif.</p></article></div>
-          <article class="panel table-panel"><div class="panel-heading"><div><h2>Batch dalam laporan</h2><p>{{ reportSummary.total_batches ?? 0 }} batch sesuai filter; ekspor memakai filter yang sama.</p></div></div><p v-if="reportLoading" class="table-state">Memuat laporan…</p><p v-else-if="reportForbidden" class="table-state error-state">Akses laporan tidak diizinkan.</p><p v-else-if="reportError" class="table-state error-state">{{ reportError }} <button class="button secondary" @click="loadReport">Coba lagi</button></p><DataTable v-else :columns="tableConfig.batches!.columns" :rows="batchRows" @open="openTableRow" /><div class="table-footer"><span>Menampilkan {{ firstVisibleRow }}–{{ lastVisibleRow }} dari {{ paginationTotal }} batch</span><div><button :disabled="currentPage <= 1" @click="currentPage--">‹</button><button class="current-page">{{ currentPage }} / {{ pageCount }}</button><button :disabled="currentPage >= pageCount" @click="currentPage++">›</button></div></div></article>
-        </section>
+        <ReportView v-else-if="page === 'reports'" v-model:from="reportFrom" v-model:to="reportTo" v-model:account-id="reportAccountID" v-model:query="reportQuery" v-model:status="reportStatus" v-model:export-type="reportExportType" :accounts="rawAccounts" :status-options="currentStatusOptionsForReport" :summary="reportSummary" :loading="reportLoading" :forbidden="reportForbidden" :error="reportError" :rows="batchRows" :columns="tableConfig.batches!.columns" :current-page="currentPage" :page-count="pageCount" :first-visible-row="firstVisibleRow" :last-visible-row="lastVisibleRow" :pagination-total="paginationTotal" @download="downloadReport" @reload="loadReport" @open="openTableRow" @page="currentPage = $event" />
 
         <section v-else-if="page === 'settings'" class="settings-page">
           <nav class="settings-nav panel" aria-label="Kategori pengaturan">
@@ -1430,24 +1168,14 @@ TRX002,2026-01-15,CREDIT,250000,IDR</pre><ul><li><b>reference_id:</b> wajib diis
     <Transition name="modal"><div v-if="successMessage" class="modal-backdrop success-alert-backdrop"><section class="success-alert" role="alertdialog" aria-modal="true" aria-labelledby="success-alert-title" aria-describedby="success-alert-message"><div class="success-alert-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></div><h2 id="success-alert-title">Berhasil</h2><p id="success-alert-message">{{ successMessage }}</p><button class="button primary" type="button" data-no-loading autofocus @click="successMessage = ''">OK</button></section></div></Transition>
     <Transition name="modal"><div v-if="showImportError" class="modal-backdrop import-error-backdrop" @click.self="showImportError = false"><section class="import-error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="import-error-title" aria-describedby="import-error-description"><div class="import-error-icon" aria-hidden="true">!</div><h2 id="import-error-title">Import belum berhasil</h2><p id="import-error-description">{{ importError }}</p><div v-if="importErrors.length" class="import-error-details"><b>Rincian validasi</b><ul><li v-for="(error, index) in importErrors" :key="index"><strong>Baris {{ error.line }} · {{ error.field }}</strong><span>{{ importValidationMessage(error.message) }}</span></li></ul></div><p class="import-error-help">Perbaiki file dan unggah kembali. Laporan error dapat diunduh dari riwayat jika tersedia.</p><button class="button primary" data-no-loading @click="showImportError = false">Mengerti</button></section></div></Transition>
     <Transition name="modal"><div v-if="showLogoutConfirm" class="modal-backdrop" @click.self="showLogoutConfirm = false"><section class="logout-confirm" role="dialog" aria-modal="true" aria-labelledby="logout-title"><h2 id="logout-title">Keluar dari akun?</h2><p>Anda akan kembali ke halaman login.</p><div class="modal-actions"><button class="button secondary" data-no-loading @click="showLogoutConfirm = false">Batal</button><button class="button primary" data-no-loading @click="logout">Keluar</button></div></section></div></Transition>
-    <Transition name="modal"><div v-if="detailPopup" class="detail-popup-backdrop" @click.self="closeDetailPopup"><section class="detail-popup" role="dialog" aria-modal="true" :aria-label="detailPopup === 'batch' ? 'Detail batch' : 'Detail exception'"><header class="detail-popup-header"><div><h2>{{ detailPopup === 'batch' ? 'Detail Batch' : 'Detail Exception' }}</h2><p>{{ detailPopup === 'batch' ? 'Ringkasan dan tindakan batch rekonsiliasi' : 'Informasi dan penanganan selisih' }}</p></div><button type="button" class="close-button" data-no-loading aria-label="Tutup detail" @click="closeDetailPopup">×</button></header><div class="detail-popup-body">
-        <section v-if="detailPopup === 'batch'" class="detail-page batch-detail-page">
+    <DetailDialog :kind="detailPopup" @close="closeDetailPopup">
+        <BatchDetail v-if="detailPopup === 'batch'" :selected-batch="selectedBatch" :current-user="currentUser" :busy="busy" :batch-tabs="batchTabs" :active-tab="activeTab" :raw-imports="rawImports" :batch-transaction-rows="batchTransactionRows" :matching-rows="matchingRows" :batch-exception-rows="batchExceptionRows" :batch-approval-rows="batchApprovalRows" :batch-audit-rows="batchAuditRows" :table-config="tableConfig" @matching="openMatchingResults" @edit="openBatchEditor" @transition="transitionBatch" @submit="submitBatch" @close-batch="closeBatch" @change-tab="activeTab = $event" @download="downloadOriginalImport" @download-errors="downloadImportErrors" @transaction="openTransaction" @exception="openBatchException" @approval="openBatchApproval" />
 
-          <div class="detail-title"><div><div class="title-line"><h2>{{ selectedBatch?.batch_no || 'Batch tidak dipilih' }}</h2><span class="badge" :class="badgeClass(selectedBatch?.state || '')">{{ selectedBatch?.state || '—' }}</span></div><p>{{ selectedBatch?.remarks || selectedBatch?.bank_display_name || 'Tanpa catatan' }} <span>·</span> {{ formatDate(selectedBatch?.period_from) }} – {{ formatDate(selectedBatch?.period_to) }} · {{ selectedBatch?.account_code }}</p></div><button v-if="currentUser?.role !== 'OPERATOR' || selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="openMatchingResults">Hasil Matching</button><button v-if="selectedBatch?.state === 'DRAFT' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="openBatchEditor">Edit Batch</button><button v-if="selectedBatch?.state === 'DRAFT' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="transitionBatch('cancel')">Batalkan</button><button v-if="selectedBatch?.state === 'REVIEW' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="transitionBatch('reopen')">Koreksi Sumber</button><button v-if="selectedBatch?.state === 'REVIEW' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="submitBatch">Ajukan Approval</button><button v-if="selectedBatch?.state === 'FAILED' && currentUser?.role === 'OPERATOR' && selectedBatch?.created_by === currentUser?.id" class="button secondary" :disabled="busy" @click="transitionBatch('retry')">Coba Matching Lagi</button><button v-if="selectedBatch?.state === 'APPROVED' && currentUser?.role === 'CHECKER'" class="button primary" :disabled="busy" @click="closeBatch">Tutup Batch</button></div>
-          <div class="kpi-grid detail-kpis"><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Transaksi Internal</span><span class="detail-metric-icon teal">↗</span></div><strong>{{ selectedBatch?.internal_count ?? 0 }}</strong><small>Data dari internal</small></article><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Transaksi Bank</span><span class="detail-metric-icon blue">↙</span></div><strong>{{ selectedBatch?.bank_count ?? 0 }}</strong><small>Data dari bank</small></article><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Matched</span><span class="detail-metric-icon green">✓</span></div><strong>{{ selectedBatch?.matched_pairs ?? 0 }}</strong><small>Pasangan transaksi</small></article><article class="kpi-card"><div class="detail-metric-head"><span class="kpi-top">Exceptions Aktif</span><span class="detail-metric-icon amber">!</span></div><strong>{{ selectedBatch?.active_exceptions ?? 0 }}</strong><small>Memerlukan tindak lanjut</small></article></div>
-          <article class="panel detail-tabs"><div class="tabs"><button v-for="tab in batchTabs" :key="tab" :class="{ selected: activeTab === tab }" @click="activeTab = tab">{{ tab }}</button></div><div v-if="activeTab === 'Ringkasan'" class="detail-summary"><div><h3>Ringkasan</h3><p>Ringkasan hasil rekonsiliasi untuk batch ini.</p><div class="match-progress"><span>Matched</span><div><i :style="{ width: `${selectedBatch?.internal_count ? selectedBatch.matched_pairs * 100 / selectedBatch.internal_count : 0}%` }"></i></div><b>{{ selectedBatch?.matched_pairs ?? 0 }} pasangan</b></div><div class="match-progress unmatched-progress"><span>Exceptions</span><div><i :style="{ width: `${selectedBatch?.internal_count ? selectedBatch.active_exceptions * 100 / selectedBatch.internal_count : 0}%` }"></i></div><b>{{ selectedBatch?.active_exceptions ?? 0 }} aktif</b></div></div><div class="batch-state"><span class="state-check">!</span><b>{{ selectedBatch?.state === 'CLOSED' ? 'Batch ditutup' : selectedBatch?.state === 'CANCELLED' ? 'Batch dibatalkan' : selectedBatch?.state === 'DRAFT' ? 'Batch masih dalam persiapan' : selectedBatch?.state === 'PENDING_APPROVAL' ? 'Menunggu persetujuan' : selectedBatch?.state === 'APPROVED' ? 'Siap ditutup' : selectedBatch?.active_exceptions ? 'Belum dapat ditutup' : 'Periksa status batch' }}</b><small>{{ selectedBatch?.state === 'CANCELLED' ? 'Batch ini telah dibatalkan.' : selectedBatch?.state === 'CLOSED' ? 'Hasil rekonsiliasi telah dikunci.' : 'Batch dapat diajukan setelah seluruh data cocok dan tidak ada exception atau approval tertunda.' }}</small></div></div><div v-else-if="activeTab === 'Imports'"><div v-for="item in rawImports" :key="item.id" class="history-item"><span class="file-icon">CSV</span><span class="file-info"><b>{{ item.original_name }}</b><small>{{ item.source_type }} · {{ item.state }} · {{ item.rows_count }} baris · {{ formatDate(item.created_at) }}</small></span><button class="link-button" @click="downloadOriginalImport(item)">File</button><button v-if="item.has_error_report" class="link-button" @click="downloadImportErrors(item)">Unduh Error</button></div><div v-if="!rawImports.length" class="detail-empty"><span class="detail-empty-icon">⇧</span><strong>Belum ada file import</strong><p>File yang diunggah untuk batch ini akan ditampilkan di sini.</p></div></div><div v-else-if="activeTab === 'Detail Transaksi'"><DataTable :columns="[{ key: 'ref', label: 'Reference' }, { key: 'date', label: 'Tanggal' }, { key: 'source', label: 'Sumber' }, { key: 'description', label: 'Arah' }, { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Kredit' }, { key: 'status', label: 'Status' }]" :rows="batchTransactionRows" @open="openTransaction" /></div><div v-else-if="activeTab === 'Matching Results'"><DataTable :columns="tableConfig.matching!.columns" :rows="matchingRows" /></div><div v-else-if="activeTab === 'Exceptions'"><DataTable :columns="tableConfig.exceptions!.columns" :rows="batchExceptionRows" link-key="ref" @open="openBatchException" /></div><div v-else-if="activeTab === 'Approvals'"><DataTable :columns="tableConfig.approvals!.columns" :rows="batchApprovalRows" @open="openBatchApproval" /></div><div v-else><DataTable :columns="tableConfig.audit!.columns" :rows="batchAuditRows" /></div></article>
-        </section>
-
-        <section v-else-if="detailPopup === 'exception'" class="detail-page exception-detail-page">
-          <div class="detail-title"><div><div class="title-line"><h2>{{ exceptionDetail?.reference_id || 'Exception' }}</h2><span class="badge warning">{{ exceptionDetail?.type || '—' }}</span></div><p>{{ exceptionDetail?.batch_no }} <span>·</span> {{ exceptionDetail?.state }} <span>·</span> PIC: {{ exceptionDetail?.assignee_name || 'Belum ditugaskan' }}</p></div><button v-if="exceptionDetail?.batch_id" class="button secondary" data-loading @click="openExceptionBatch">Lihat batch</button><div v-if="currentUser?.role === 'OPERATOR' && exceptionDetail?.can_assign_others && ['OPEN','INVESTIGATING'].includes(exceptionDetail?.state)" class="exception-assignment"><input v-model="operatorSearch" class="form-control" aria-label="Cari operator" placeholder="Cari nama Operator" /><GlobalDropdown v-model="assignmentTarget" class="form-control" aria-label="Pilih penanggung jawab"><option :value="currentUser?.id || ''">Saya · {{ currentUser?.full_name }}</option><option v-for="operator in exceptionOperators.filter(item => item.id !== currentUser?.id)" :key="operator.id" :value="operator.id">{{ operator.full_name }}</option></GlobalDropdown><button class="button secondary" :disabled="!assignmentTarget" @click="assignException">Tugaskan</button></div><button v-if="exceptionDetail?.type === 'DATE_VARIANCE' && currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING'].includes(exceptionDetail?.state)" class="button primary" data-loading @click="modal = 'proposal'">Ajukan Manual Match</button></div>
-          <div class="comparison-grid"><article class="panel"><div class="panel-heading"><div><h2>Data Internal</h2><p>{{ exceptionDetail?.internal?.source_type || 'INTERNAL' }}</p></div></div><div class="data-pair"><span>Reference ID</span><b>{{ exceptionDetail?.internal?.reference_id || '—' }}</b></div><div class="data-pair"><span>Tanggal</span><b>{{ formatDate(exceptionDetail?.internal?.date) }}</b></div><div class="data-pair"><span>Arah</span><b>{{ exceptionDetail?.internal?.direction || '—' }}</b></div><div class="data-pair"><span>Nominal</span><b>{{ money(exceptionDetail?.internal?.amount_rupiah) }}</b></div></article><article class="panel"><div class="panel-heading"><div><h2>Data Bank</h2><p>{{ exceptionDetail?.bank?.source_type || 'BANK' }}</p></div></div><div class="data-pair"><span>Reference ID</span><b>{{ exceptionDetail?.bank?.reference_id || '—' }}</b></div><div class="data-pair"><span>Tanggal</span><b>{{ formatDate(exceptionDetail?.bank?.date) }}</b></div><div class="data-pair"><span>Arah</span><b>{{ exceptionDetail?.bank?.direction || '—' }}</b></div><div class="data-pair mismatch"><span>Nominal</span><b>{{ money(exceptionDetail?.bank?.amount_rupiah) }}</b></div></article></div><article v-if="exceptionDetail?.type === 'AMBIGUOUS_MATCH'" class="panel ambiguity-panel"><h3>Transaksi dengan reference yang sama</h3><p>Reference ini muncul lebih dari sekali. Pilihannya perlu diperiksa dan sumber diperbaiki sebelum batch diajukan.</p><div class="candidate-table-wrap"><table class="candidate-table"><thead><tr><th>Sumber</th><th>Referensi</th><th>Tanggal</th><th>Arah</th><th>Nominal</th><th>Mata uang</th></tr></thead><tbody><tr v-for="candidate in exceptionDetail.candidates || []" :key="candidate.id"><td>{{ candidate.source_type }}</td><td>{{ candidate.reference_id }}</td><td>{{ formatDate(candidate.date) }}</td><td>{{ candidate.direction }}</td><td>{{ money(candidate.amount_rupiah) }}</td><td>{{ candidate.currency }}</td></tr></tbody></table></div><p v-if="!exceptionDetail.candidates?.length">Tidak ada kandidat yang tersedia.</p></article>
-          <article class="panel timeline-panel"><div class="panel-heading"><div><h2>Riwayat Pemeriksaan</h2><p>Catatan dan assignment exception</p></div></div><div class="timeline"><div v-for="action in exceptionDetail?.actions || []" :key="action.id"><i></i><span><b>{{ action.action_type }} · {{ action.actor_name }}</b><small>{{ action.note || 'Tidak ada catatan' }} · {{ formatDate(action.created_at) }}</small><button v-if="action.has_evidence" class="link-button" @click="downloadExceptionEvidence(action)">Unduh {{ action.file_name || 'evidence' }}</button></span></div><p v-if="!exceptionDetail?.actions?.length">Belum ada tindakan.</p></div><label v-if="currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING','PENDING_ACTION_APPROVAL'].includes(exceptionDetail?.state)" class="field-label">Catatan investigasi<textarea v-model="investigationNote" class="form-control" rows="2" placeholder="Catatan untuk audit trail"></textarea></label><button v-if="currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING','PENDING_ACTION_APPROVAL'].includes(exceptionDetail?.state)" class="button secondary" :disabled="!investigationNote.trim()" @click="addExceptionNote">Simpan Catatan</button><div v-if="currentUser?.role === 'OPERATOR' && ['OPEN','INVESTIGATING','PENDING_ACTION_APPROVAL'].includes(exceptionDetail?.state)" class="evidence-upload"><input id="exception-evidence-input" class="hidden-input" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain" @change="onEvidenceFile" /><span>{{ evidenceFile?.name || 'PDF, PNG, JPEG, TXT · maks. 5 MB' }}</span><button class="button secondary" @click="chooseEvidenceFile">Pilih Evidence</button><button class="button primary" :disabled="!evidenceFile" @click="uploadExceptionEvidence">Unggah</button></div></article>
-        </section>
-
-</div><footer class="detail-popup-footer"><button type="button" class="button secondary" data-no-loading @click="closeDetailPopup">Tutup</button></footer></section></div></Transition>
+        <ExceptionDetail v-else-if="detailPopup === 'exception'" v-model:operator-search="operatorSearch" v-model:assignment-target="assignmentTarget" v-model:investigation-note="investigationNote" :exception-detail="exceptionDetail" :current-user="currentUser" :exception-operators="exceptionOperators" :evidence-file="evidenceFile" @open-batch="openExceptionBatch" @assign="assignException" @propose="modal = 'proposal'" @download-evidence="downloadExceptionEvidence" @add-note="addExceptionNote" @file="onEvidenceFile" @choose-file="chooseEvidenceFile" @upload-evidence="uploadExceptionEvidence" />
+</DetailDialog>
     <Transition name="modal"><div v-if="modal" class="modal-backdrop" @click.self="modal = ''"><section class="modal-card" :class="`modal-${modal}`"><div class="modal-heading"><div><h2>{{ modal === 'batch' ? 'Buat Batch Rekonsiliasi' : modal === 'editBatch' ? 'Edit Batch'  : modal === 'account' ? 'Tambah Sumber Data' : modal === 'accountEdit' ? 'Edit Rekening' : modal === 'accountView' ? 'Detail Rekening' : modal === 'proposal' ? 'Ajukan Manual Match' : modal === 'approval' ? 'Keputusan Approval' : modal === 'profile' ? 'Profil Saya' : modal === 'transaction' ? 'Detail Transaksi' : modal === 'auditDetail' ? 'Detail Audit Log' : modal === 'userActions' ? 'Akses Pengguna' : 'Tambah Pengguna' }}</h2><p>{{ modal === 'batch' || modal === 'editBatch' ? 'Tentukan rekening dan periode rekonsiliasi.' : modal === 'accountView' ? 'Informasi rekening sumber.' : modal === 'accountEdit' ? 'Perbarui rekening sumber. Rekening dengan batch aktif tidak dapat dinonaktifkan.' : modal === 'proposal' ? 'Permintaan ini akan ditinjau oleh Checker.' : modal === 'approval' ? approvalDetail?.reason : modal === 'profile' ? 'Informasi akun yang sedang digunakan.' : modal === 'transaction' ? 'Informasi transaksi dan hasil rekonsiliasi.' : modal === 'auditDetail' ? 'Ringkasan aktivitas dan perubahan yang tercatat.' : 'Lengkapi informasi untuk melanjutkan.' }}</p></div><button class="close-button" data-no-loading aria-label="Tutup" @click="modal = ''">×</button></div>
       <div class="modal-body">
-      <template v-if="modal === 'transaction'"><div class="friendly-detail"><div class="friendly-highlight"><span>Nomor referensi</span><strong>{{ selectedTransaction?.reference_id || '—' }}</strong><small>{{ humanLabel(selectedTransaction?.status) }}</small></div><div class="friendly-grid"><div><span>Tanggal transaksi</span><strong>{{ formatDate(selectedTransaction?.date) }}</strong></div><div><span>Jenis transaksi</span><strong>{{ humanLabel(selectedTransaction?.direction) }}</strong></div><div><span>Nominal</span><strong>{{ money(selectedTransaction?.amount_rupiah) }}</strong></div><div><span>Sumber data</span><strong>{{ humanLabel(selectedTransaction?.source_type) }}</strong></div><div><span>Batch rekonsiliasi</span><strong>{{ transactionBatchLabel || 'Tidak tersedia' }}</strong></div><div><span>Mata uang</span><strong>{{ selectedTransaction?.currency || '—' }}</strong></div></div></div></template><template v-else-if="modal === 'auditDetail'"><div class="friendly-detail"><div class="friendly-highlight"><span>Aktivitas</span><strong>{{ humanLabel(auditDetail?.action) }}</strong><small>{{ humanLabel(auditDetail?.entity) }}</small></div><div class="friendly-grid"><div><span>Waktu</span><strong>{{ formatDateTime(auditDetail?.created_at) }}</strong></div><div><span>Pengguna</span><strong>{{ auditDetail?.actor || 'Sistem' }}</strong></div></div><div class="audit-change-grid"><section><h3>Sebelum</h3><div v-if="auditBefore.length" class="audit-change-list"><div v-for="field in auditBefore" :key="field.label"><span>{{ field.label }}</span><strong>{{ field.value }}</strong></div></div><p v-else>Tidak ada data sebelumnya.</p></section><section><h3>Sesudah</h3><div v-if="auditAfter.length" class="audit-change-list"><div v-for="field in auditAfter" :key="field.label"><span>{{ field.label }}</span><strong>{{ field.value }}</strong></div></div><p v-else>Tidak ada perubahan yang ditampilkan.</p></section></div></div></template><template v-else-if="modal === 'profile'"><label class="field-label">Nama lengkap<input class="form-control" :value="currentUser?.full_name" readonly /></label><label class="field-label">Email<input class="form-control" :value="currentUser?.email" readonly /></label><label class="field-label">Role<input class="form-control" :value="currentUser?.role" readonly /></label><div class="modal-actions"><button class="button secondary" data-no-loading @click="modal = ''">Tutup</button><button class="button primary" @click="logout">Keluar dari akun</button></div></template><template v-else-if="modal === 'batch' || modal === 'editBatch'"><label class="field-label">Rekening Sumber<GlobalDropdown v-model="batchForm.account_id" class="form-control" required><option value="" disabled>Pilih rekening</option><option v-for="account in rawAccounts.filter(item => item.active)" :key="account.id" :value="account.id">{{ account.account_code }} · {{ account.bank_display_name }}</option></GlobalDropdown></label><label class="field-label">Periode Batch<div class="date-pair"><input v-model="batchForm.period_from" class="form-control" type="date" /><input v-model="batchForm.period_to" class="form-control" type="date" /></div></label><label class="field-label">Catatan<input v-model="batchForm.remarks" class="form-control" placeholder="Opsional" /></label></template>
+      <RecordDetail v-if="modal === 'transaction' || modal === 'auditDetail'" :kind="modal === 'transaction' ? 'transaction' : 'audit'" :selected-transaction="selectedTransaction" :audit-detail="auditDetail" :transaction-batch-label="transactionBatchLabel" /><template v-else-if="modal === 'profile'"><label class="field-label">Nama lengkap<input class="form-control" :value="currentUser?.full_name" readonly /></label><label class="field-label">Email<input class="form-control" :value="currentUser?.email" readonly /></label><label class="field-label">Role<input class="form-control" :value="currentUser?.role" readonly /></label><div class="modal-actions"><button class="button secondary" data-no-loading @click="modal = ''">Tutup</button><button class="button primary" @click="logout">Keluar dari akun</button></div></template><template v-else-if="modal === 'batch' || modal === 'editBatch'"><label class="field-label">Rekening Sumber<GlobalDropdown v-model="batchForm.account_id" class="form-control" required><option value="" disabled>Pilih rekening</option><option v-for="account in rawAccounts.filter(item => item.active)" :key="account.id" :value="account.id">{{ account.account_code }} · {{ account.bank_display_name }}</option></GlobalDropdown></label><label class="field-label">Periode Batch<div class="date-pair"><input v-model="batchForm.period_from" class="form-control" type="date" /><input v-model="batchForm.period_to" class="form-control" type="date" /></div></label><label class="field-label">Catatan<input v-model="batchForm.remarks" class="form-control" placeholder="Opsional" /></label></template>
       <template v-else-if="modal === 'accountView'"><div class="data-pair"><span>Kode</span><b>{{ accountForm.account_code }}</b></div><div class="data-pair"><span>Nama sumber</span><b>{{ accountForm.bank_display_name }}</b></div><div class="data-pair"><span>Rekening</span><b>{{ accountForm.masked_account_no }}</b></div><div class="data-pair"><span>Pemilik</span><b>{{ accountForm.account_holder_name }}</b></div><div class="data-pair"><span>Status</span><b>{{ accountActiveForm ? 'Aktif' : 'Nonaktif' }}</b></div></template><template v-else-if="modal === 'account' || modal === 'accountEdit'"><label class="field-label">Kode sumber<input v-model="accountForm.account_code" class="form-control" placeholder="QRIS" /></label><label class="field-label">Nama sumber<input v-model="accountForm.bank_display_name" class="form-control" placeholder="QRIS Utama" /></label><label class="field-label">Nomor rekening tersamarkan<input v-model="accountForm.masked_account_no" class="form-control" /></label><label class="field-label">Pemilik rekening<input v-model="accountForm.account_holder_name" class="form-control" /></label><label v-if="modal === 'accountEdit'" class="field-label">Status<GlobalDropdown v-model="accountActiveForm" class="form-control"><option :value="true">Aktif</option><option :value="false">Nonaktif</option></GlobalDropdown></label></template>
       <template v-else-if="modal === 'user'"><label class="field-label">Nama Lengkap<input v-model="userForm.full_name" class="form-control" placeholder="Nama pengguna" /></label><label class="field-label">Email<input v-model="userForm.email" class="form-control" type="email" placeholder="nama@perusahaan.co.id" /></label><label class="field-label">Password awal<input v-model="userForm.password" class="form-control" type="password" minlength="12" /></label><label class="field-label">Role<GlobalDropdown v-model="userForm.role" class="form-control"><option value="OPERATOR">Operator</option><option value="CHECKER">Checker</option><option value="ADMIN">Admin</option><option value="AUDITOR">Auditor</option></GlobalDropdown></label></template>
       <label v-else-if="modal === 'proposal'" class="field-label">Alasan Pengajuan<textarea v-model="proposalReason" class="form-control" rows="4" placeholder="Minimum 20 karakter; hanya DATE_VARIANCE yang dapat diusulkan."></textarea></label>

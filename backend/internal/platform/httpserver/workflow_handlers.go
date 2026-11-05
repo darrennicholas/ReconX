@@ -531,6 +531,20 @@ func (a *api) listApprovals(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, r, http.StatusOK, items, paginationMeta(page, pageSize, total))
 }
 
+func (a *api) getApproval(w http.ResponseWriter, r *http.Request) {
+	principal, _ := identity.PrincipalFromContext(r.Context())
+	if !identity.CanViewApprovals(principal.Role) {
+		httpx.Error(w, r, http.StatusForbidden, "forbidden", "Akses approval hanya tersedia bagi Checker dan Auditor.")
+		return
+	}
+	item, err := a.exceptions.GetApproval(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.notFoundOrError(w, r, err, "Approval tidak ditemukan.")
+		return
+	}
+	httpx.JSON(w, r, http.StatusOK, item, nil)
+}
+
 func (a *api) approveRequest(w http.ResponseWriter, r *http.Request) {
 	a.decideApproval(w, r, "APPROVE")
 }

@@ -98,6 +98,7 @@ func registerFeatureRoutes(mux *http.ServeMux, db *sql.DB, logger *slog.Logger) 
 	mux.Handle("GET /api/v1/exceptions/{id}/evidence/{evidenceID}", app.protect(identity.PermissionBatchesRead, false, app.downloadExceptionEvidence))
 	mux.Handle("POST /api/v1/exceptions/{id}/manual-match-proposals", app.protectIdempotent(identity.PermissionMatchesPropose, app.proposeManualMatch))
 	mux.Handle("GET /api/v1/approvals", app.protect("", false, app.listApprovals))
+	mux.Handle("GET /api/v1/approvals/{id}", app.protect("", false, app.getApproval))
 	mux.Handle("POST /api/v1/approvals/{id}/approve", app.protectIdempotent("", app.approveRequest))
 	mux.Handle("POST /api/v1/approvals/{id}/reject", app.protectIdempotent("", app.rejectRequest))
 

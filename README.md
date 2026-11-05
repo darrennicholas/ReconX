@@ -4,6 +4,14 @@ ReconX adalah aplikasi **Bank Transaction Reconciliation & Exception Management*
 
 > FSD MVP hanya mengizinkan data sintetis. Aplikasi ini tidak terhubung ke bank, tidak memindahkan dana, dan tidak memposting jurnal. Jangan unggah data nasabah atau bank nyata.
 
+## Gambaran aplikasi
+
+| Dashboard | Investigasi exception | Review Checker |
+| --- | --- | --- |
+| ![Dashboard ReconX](docs/images/dashboard.png) | ![Detail exception](docs/images/exception.png) | ![Review manual match](docs/images/approval.png) |
+
+Screenshot dibuat dari database sementara dengan data seed development. Lihat [panduan demo](docs/DEMO.md) untuk mencoba alur Operator dan Checker.
+
 ## Teknologi dan susunan kode
 
 - **Backend:** Go dengan Gin sebagai HTTP runtime, PostgreSQL melalui pgx `database/sql` driver, satu proses API modular.
@@ -23,10 +31,163 @@ backend/internal/platform/migrate/003_ambiguous_references.sql
 backend/examples/                 Fixture CSV sintetis
 frontend/src/App.vue              Root Vue Router
 frontend/src/Workspace.vue        UI ReconX dan alur API
+frontend/src/features/dashboard/  Tampilan dashboard
+frontend/src/features/batches/    Detail batch dan tindakannya
+frontend/src/features/exceptions/ Detail exception dan investigasi
+frontend/src/features/imports/    Tampilan impor transaksi
+frontend/src/features/matching/  Proses matching dan pemantauan hasil
+frontend/src/features/reports/    Tampilan dan akses API laporan
+frontend/src/features/details/    Modal bersama, detail transaksi, dan audit
 frontend/src/router.ts            Route dan guard berdasarkan role
 frontend/src/stores/session.ts    State sesi Pinia
 frontend/src/api.ts               Session, CSRF, request ID, idempotency
 ```
+
+## Panduan setup lengkap untuk pemula
+
+Panduan ini menggunakan **Windows dan PowerShell**, dengan PostgreSQL lokal seperti yang tersedia melalui Laragon. Perintah dijalankan di terminal VS Code atau PowerShell. Ganti `C:\ReconX` dengan lokasi folder proyek Anda jika berbeda.
+
+### 1. Siapkan aplikasi yang dibutuhkan
+
+Instal dan pastikan aplikasi berikut tersedia:
+
+- **Git** untuk mengunduh source code.
+- **Go 1.23 atau lebih baru** untuk backend; versi minimum proyek dapat dilihat di `backend/go.mod`.
+- **Node.js 22 dan npm** untuk frontend; npm sudah termasuk dalam instalasi Node.js.
+- **PostgreSQL** yang berjalan secara lokal, misalnya PostgreSQL 16 atau versi yang tersedia di Laragon. HeidiSQL boleh digunakan sebagai aplikasi untuk mengelola PostgreSQL.
+- Editor seperti **VS Code**.
+
+Buka PowerShell baru setelah instalasi, lalu periksa masing-masing perintah:
+
+```powershell
+git --version
+go version
+node --version
+npm --version
+```
+
+Jika salah satu perintah tidak ditemukan, periksa instalasinya dan buka kembali terminal agar perubahan PATH terbaca. Perintah PostgreSQL `psql --version` hanya tersedia jika folder `bin` PostgreSQL telah ditambahkan ke PATH; HeidiSQL dapat digunakan sebagai gantinya.
+
+### 2. Unduh atau buka proyek
+
+Jika belum memiliki proyek, jalankan dari folder tempat Anda ingin menyimpannya:
+
+```powershell
+git clone https://github.com/darrennicholas/ReconX.git
+cd ReconX
+```
+
+Jika folder proyek sudah ada, buka folder tersebut di VS Code dan langsung masuk ke root proyek:
+
+```powershell
+cd C:\ReconX
+```
+
+Di root Anda akan melihat folder `backend`, `frontend`, file `.env.example`, dan `docker-compose.yml`.
+
+### 3. Jalankan PostgreSQL dan buat database
+
+Pastikan **PostgreSQL berjalan**. Di Laragon, jalankan layanan PostgreSQL; pastikan layanan yang digunakan PostgreSQL, bukan MySQL/MariaDB. Port PostgreSQL lokal yang umum adalah `5432`, tetapi gunakan port yang benar sesuai instalasi Anda.
+
+Jika memakai HeidiSQL:
+
+1. Buat atau buka session **PostgreSQL TCP/IP**. Untuk server lokal, biasanya hostname `127.0.0.1`, port `5432`, dan user `postgres`. Isi password sesuai instalasi PostgreSQL Anda.
+2. Hubungkan ke database bawaan `postgres` sebagai database awal. Session PostgreSQL lokal biasanya tidak memerlukan SSH tunnel.
+3. Buat database baru bernama `reconx` lewat menu HeidiSQL, atau jalankan query berikut **sekali** di tab query:
+
+```sql
+CREATE DATABASE reconx;
+```
+
+4. Buka kembali session yang mengarah ke database `reconx`. Tabel aplikasi akan dibuat pada langkah migration; schema yang digunakan umumnya `public`.
+
+Jika database `reconx` sudah ada dan memang untuk proyek ini, tidak perlu membuatnya lagi. Jangan menghapus database yang berisi pekerjaan Anda.
+
+### 4. Buat dan sesuaikan file `.env`
+
+File `.env` berisi konfigurasi lokal dan tidak dikirim ke GitHub. Dari root proyek, buat dari contoh **hanya jika belum ada**:
+
+```powershell
+cd C:\ReconX
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Buka `.env` di VS Code. Sesuaikan `DATABASE_URL` dengan host, port, nama database, user, dan password PostgreSQL milik Anda. Contoh untuk PostgreSQL lokal dengan user `postgres` tanpa password:
+
+```dotenv
+APP_ENV=development
+API_ADDR=:8080
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/reconx?sslmode=disable
+API_PROXY_TARGET=http://localhost:8080
+IMPORT_STORAGE_DIR=./private-data/imports
+BOOTSTRAP_ADMIN_NAME=ReconX Admin
+BOOTSTRAP_ADMIN_EMAIL=admin@reconx.local
+BOOTSTRAP_ADMIN_PASSWORD=developer
+```
+
+Jika user memiliki password, formatnya adalah `postgres://USER:PASSWORD@HOST:PORT/NAMA_DATABASE?sslmode=disable`. Karakter khusus pada user atau password di URL perlu di-encode; jangan membagikan nilai `.env` atau melakukan commit file tersebut. `sslmode=disable` pada contoh ini ditujukan untuk koneksi lokal.
+
+`API_ADDR=:8080` adalah port backend. Frontend Vite menggunakan `API_PROXY_TARGET` untuk meneruskan permintaan `/api` ke backend. Jika mengganti port backend, samakan nilai `API_PROXY_TARGET` dan restart frontend.
+
+### 5. Install dependensi, jalankan migration, dan isi data awal
+
+Pastikan PostgreSQL aktif dan `.env` sudah benar. Kemudian jalankan:
+
+```powershell
+cd C:\ReconX\backend
+go mod download
+go run ./cmd/migrate
+go run ./cmd/seed
+```
+
+Migration membuat tabel PostgreSQL dan mencatat versinya di `public.schema_migrations`. Seeder development menyiapkan akun yang tercantum pada bagian **Akun awal development** dan data contoh agar alur aplikasi dapat dicoba. Seeder tidak mengatur ulang password pengguna yang sudah ada.
+
+Untuk mengunduh dependensi frontend, gunakan terminal yang sama atau terminal baru:
+
+```powershell
+cd C:\ReconX\frontend
+npm ci
+```
+
+`npm ci` menggunakan versi yang tercatat dalam `package-lock.json`. Koneksi internet diperlukan saat mengunduh dependensi pertama kali.
+
+### 6. Jalankan backend dan frontend
+
+Buka **dua terminal** dan biarkan keduanya berjalan selama menggunakan aplikasi.
+
+Terminal 1 — backend Go:
+
+```powershell
+cd C:\ReconX\backend
+go run ./cmd/api
+```
+
+Terminal 2 — frontend Vue:
+
+```powershell
+cd C:\ReconX\frontend
+npm run dev
+```
+
+Buka alamat yang ditampilkan Vite, biasanya <http://localhost:5173>. Untuk memeriksa API secara terpisah, buka <http://localhost:8080/api/v1/health> atau jalankan:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/api/v1/health
+```
+
+Login awal development dapat menggunakan `operator@reconx.local` / `developer` atau akun lain pada bagian **Akun awal development**. Lihat [panduan demo](docs/DEMO.md) untuk urutan Operator → Checker dan contoh file CSV. Tekan `Ctrl+C` pada masing-masing terminal untuk menghentikan server.
+
+### 7. Pemeriksaan dan masalah yang sering terjadi
+
+- **`database "reconx" does not exist`**: buat database `reconx` di PostgreSQL, lalu periksa `DATABASE_URL`.
+- **Koneksi ditolak / port salah**: pastikan PostgreSQL sudah berjalan dan host serta port pada `.env` sama dengan pengaturan session HeidiSQL. Port MySQL `3306` bukan port PostgreSQL default.
+- **Password authentication failed**: sesuaikan user dan password pada `DATABASE_URL` dengan akun PostgreSQL Anda; encode karakter khusus jika menggunakan URL.
+- **Tabel belum terlihat di HeidiSQL**: pastikan session terhubung ke database `reconx`, buka schema `public`, jalankan migration, lalu refresh daftar tabel.
+- **Port 8080 atau 5173 sudah dipakai**: hentikan proses yang memakai port tersebut atau ubah port sesuai kebutuhan. Jika port backend berubah, sesuaikan juga `API_PROXY_TARGET`.
+- **Frontend tampil tetapi API gagal**: pastikan terminal backend masih berjalan, endpoint health dapat dibuka, dan frontend sudah direstart setelah perubahan proxy.
+- **CSV ditolak**: gunakan CSV UTF-8 dengan kolom `reference_id,date,direction,amount,currency`; tanggal harus berada di periode batch. Format `.xlsx` perlu disimpan sebagai CSV terlebih dahulu.
+
+Perintah tes dan informasi database khusus tes dijelaskan pada bagian **Penugasan exception dan pengujian RBAC** serta **Validasi build** di bawah.
 
 ## Role dan hak akses
 
@@ -179,6 +340,8 @@ Prefix: `/api/v1`
 
 Respons JSON menggunakan envelope `{ success, data, meta, error, request_id }`. Session cookie `HttpOnly`/`SameSite=Strict`; request perubahan memakai token CSRF. Import disimpan di `IMPORT_STORAGE_DIR` (default `backend/private-data/imports`), di luar folder public frontend.
 
+Detail approval diakses melalui `GET /api/v1/approvals/{id}` oleh Checker dan Auditor. Pengambilan berdasarkan ID tidak dibatasi oleh halaman pertama daftar approval.
+
 ## CSV sintetis
 
 `backend/examples/internal.csv` dan `backend/examples/bank.csv` berisi fixture dengan header:
@@ -202,3 +365,15 @@ npm run build
 ```
 
 Tes integrasi yang memerlukan PostgreSQL dijalankan dengan variabel khusus sebagaimana dijelaskan pada bagian pengujian RBAC. Build memeriksa kompilasi dan bundling aplikasi.
+
+Tes browser menggunakan Playwright dan **mengubah data seed**, termasuk menyetujui satu manual match. Gunakan database development khusus tes yang baru dibuat, jalankan migration dan seeder padanya, lalu jalankan backend pada `127.0.0.1:18080`. Jangan gunakan database kerja Anda untuk tes ini:
+
+```powershell
+cd C:\ReconX\frontend
+npm ci
+npx playwright install chromium
+$env:API_PROXY_TARGET = 'http://127.0.0.1:18080'
+npm run test:e2e
+```
+
+GitHub Actions menjalankan tes Go termasuk integrasi PostgreSQL, build frontend, serta tes browser Operator dan Checker terhadap database terisolasi pada setiap push dan pull request. File workflow berada di `.github/workflows/ci.yml`.

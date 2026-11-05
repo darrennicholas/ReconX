@@ -531,6 +531,10 @@ func (s Service) ListApprovals(ctx context.Context, state, kind string) ([]Appro
 }
 
 func (s Service) ListApprovalsPage(ctx context.Context, state, kind, query string, page, pageSize int) ([]ApprovalView, int, error) {
+	return s.listApprovalsPage(ctx, state, kind, query, "", page, pageSize)
+}
+
+func (s Service) listApprovalsPage(ctx context.Context, state, kind, query, approvalID string, page, pageSize int) ([]ApprovalView, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -538,13 +542,13 @@ func (s Service) ListApprovalsPage(ctx context.Context, state, kind, query strin
 		pageSize = 25
 	}
 	var total int
-	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM approval_requests a JOIN reconciliation_batches b ON b.id=a.batch_id JOIN users m ON m.id=a.maker_id WHERE ($1='' OR a.state=$1 OR ($1='HISTORY' AND a.state<>'PENDING')) AND ($2='' OR a.kind=$2) AND ($3='' OR b.batch_no ILIKE '%'||$3||'%' OR m.full_name ILIKE '%'||$3||'%' OR a.id::text ILIKE '%'||$3||'%')`, state, kind, query).Scan(&total); err != nil {
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM approval_requests a JOIN reconciliation_batches b ON b.id=a.batch_id JOIN users m ON m.id=a.maker_id WHERE ($1='' OR a.state=$1 OR ($1='HISTORY' AND a.state<>'PENDING')) AND ($2='' OR a.kind=$2) AND ($3='' OR b.batch_no ILIKE '%'||$3||'%' OR m.full_name ILIKE '%'||$3||'%' OR a.id::text ILIKE '%'||$3||'%') AND ($4='' OR a.id::text=$4)`, state, kind, query, approvalID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT a.id::text,a.kind,a.batch_id::text,b.batch_no,COALESCE(a.exception_id::text,''),COALESCE(e.type,''),a.maker_id::text,m.full_name,COALESCE(a.checker_id::text,''),a.state,a.source_version,a.reason,a.decision_comment,a.created_at,a.decided_at,
 		COALESCE(a.match_proposal_payload->>'internal_transaction_id',''),COALESCE(a.match_proposal_payload->>'bank_transaction_id','')
 		FROM approval_requests a JOIN reconciliation_batches b ON b.id=a.batch_id JOIN users m ON m.id=a.maker_id LEFT JOIN reconciliation_exceptions e ON e.id=a.exception_id
-		WHERE ($1='' OR a.state=$1 OR ($1='HISTORY' AND a.state<>'PENDING')) AND ($2='' OR a.kind=$2) AND ($3='' OR b.batch_no ILIKE '%'||$3||'%' OR m.full_name ILIKE '%'||$3||'%' OR a.id::text ILIKE '%'||$3||'%') ORDER BY CASE WHEN a.state='PENDING' THEN 0 ELSE 1 END,a.created_at DESC LIMIT $4 OFFSET $5`, state, kind, query, pageSize, (page-1)*pageSize)
+		WHERE ($1='' OR a.state=$1 OR ($1='HISTORY' AND a.state<>'PENDING')) AND ($2='' OR a.kind=$2) AND ($3='' OR b.batch_no ILIKE '%'||$3||'%' OR m.full_name ILIKE '%'||$3||'%' OR a.id::text ILIKE '%'||$3||'%') AND ($6='' OR a.id::text=$6) ORDER BY CASE WHEN a.state='PENDING' THEN 0 ELSE 1 END,a.created_at DESC LIMIT $4 OFFSET $5`, state, kind, query, pageSize, (page-1)*pageSize, approvalID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -581,7 +585,7 @@ func (s Service) ListApprovalsPage(ctx context.Context, state, kind, query strin
 }
 
 func (s Service) GetApproval(ctx context.Context, approvalID string) (ApprovalView, error) {
-	items, err := s.ListApprovals(ctx, "", "")
+	items, _, err := s.listApprovalsPage(ctx, "", "", "", approvalID, 1, 1)
 	if err != nil {
 		return ApprovalView{}, err
 	}
