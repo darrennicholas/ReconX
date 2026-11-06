@@ -1,6 +1,8 @@
 package reconciliation
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -68,5 +70,39 @@ func TestClassifyFSDScenarios(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// BenchmarkClassifyTenThousand measures the matching classifier on the FSD's
+// 10,000-row scenario. Run with go test -bench BenchmarkClassifyTenThousand.
+func BenchmarkClassifyTenThousand(b *testing.B) {
+	internal := make([]TransactionView, 10000)
+	bank := make([]TransactionView, 10000)
+	for i := range internal {
+		ref := fmt.Sprintf("REF-%05d", i)
+		internal[i] = tx("i"+ref, ref, "CREDIT", 100000, "2026-11-03")
+		bank[i] = tx("b"+ref, ref, "CREDIT", 100000, "2026-11-03")
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		matches, exceptions := classify(internal, bank)
+		if len(matches) != 10000 || len(exceptions) != 0 {
+			b.Fatal("unexpected matching result")
+		}
+	}
+}
+
+func TestTenThousandMatchesAreDeterministic(t *testing.T) {
+	internal := make([]TransactionView, 10000)
+	bank := make([]TransactionView, 10000)
+	for i := range internal {
+		ref := fmt.Sprintf("REF-%05d", i)
+		internal[i] = tx("i"+ref, ref, "CREDIT", 100000, "2026-11-03")
+		bank[i] = tx("b"+ref, ref, "CREDIT", 100000, "2026-11-03")
+	}
+	first, exceptions := classify(internal, bank)
+	second, nextExceptions := classify(internal, bank)
+	if len(first) != 10000 || len(exceptions) != 0 || !reflect.DeepEqual(first, second) || !reflect.DeepEqual(exceptions, nextExceptions) {
+		t.Fatalf("matching 10000 rows was incomplete or nondeterministic: pairs=%d exceptions=%d", len(first), len(exceptions))
 	}
 }

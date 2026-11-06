@@ -377,3 +377,5 @@ npm run test:e2e
 ```
 
 GitHub Actions menjalankan tes Go termasuk integrasi PostgreSQL, build frontend, serta tes browser Operator dan Checker terhadap database terisolasi pada setiap push dan pull request. File workflow berada di `.github/workflows/ci.yml`.
+
+Untuk pemetaan skenario FSD T01–T18, batas interpretasi, dan perintah benchmark, lihat [cakupan acceptance](docs/ACCEPTANCE.md).

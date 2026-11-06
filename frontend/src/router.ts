@@ -1,26 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useSessionStore } from './stores/session'
-
-const roles = {
-  dashboard: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  batches: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  batchDetail: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  imports: ['OPERATOR'],
-  transactions: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  matching: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  exceptions: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  exceptionDetail: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  approvals: ['CHECKER', 'AUDITOR'],
-  reports: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  accounts: ['ADMIN', 'OPERATOR', 'CHECKER', 'AUDITOR'],
-  users: ['ADMIN'],
-  audit: ['ADMIN', 'CHECKER', 'AUDITOR'],
-  settings: ['ADMIN', 'CHECKER', 'AUDITOR'],
-} as const
+import { routeRoles } from './features/navigation/navigation'
 
 const routes = [
   { path: '/login', name: 'login', component: () => import('./Workspace.vue'), meta: { public: true } },
-  ...Object.entries(roles).map(([name, allowedRoles]) => ({
+  ...Object.entries(routeRoles).map(([name, allowedRoles]) => ({
     path: name === 'batchDetail' ? '/batch/:id?' : name === 'exceptionDetail' ? '/exception/:id?' : `/${name === 'dashboard' ? 'dashboard' : name}`,
     name,
     component: () => import('./Workspace.vue'),
